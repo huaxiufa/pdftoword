@@ -4,13 +4,15 @@ import re
 
 from docx import Document
 from docx.enum.section import WD_SECTION
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 from app.model import DocumentModel
 
 
 def _style_run(run, span):
-    run.font.name = span.font or "Arial"
+    font_name = span.font or "Arial"
+    run.font.name = font_name
     run.font.size = Pt(span.size or 10)
     run.bold = span.bold
     run.italic = span.italic
@@ -18,7 +20,7 @@ def _style_run(run, span):
     rpr = run._r.get_or_add_rPr()
     rfonts = rpr.rFonts
     if rfonts is not None:
-        rfonts.set("w:eastAsia", span.font or "Arial")
+        rfonts.set(qn("w:eastAsia"), font_name)
 
 
 def _clean_bullet(text):
