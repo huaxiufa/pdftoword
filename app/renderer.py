@@ -10,13 +10,13 @@ from docx.shared import Inches, Pt
 from app.model import DocumentModel
 
 
-def _style_run(run, span):
+def _style_run(run, span, font_scale=1.0):
     font_name = span.font or "Arial"
     run.font.name = font_name
-    run.font.size = Pt(span.size or 10)
+    run.font.size = Pt((span.size or 10) * font_scale)
     run.bold = span.bold
     run.italic = span.italic
-    # Keep East Asia font mapping consistent with the Latin font where possible.
+    # python-docx accepts namespaced OOXML attributes through qn().
     rpr = run._r.get_or_add_rPr()
     rfonts = rpr.rFonts
     if rfonts is not None:
@@ -38,13 +38,10 @@ def _configure_section(section, page):
     section.footer_distance = Inches(0)
 
 
-def _new_paragraph(doc, block, cursor_y):
+def _new_paragraph(doc, block, cursor_y, vertical_scale=1.0):
     p = doc.add_paragraph()
-    # Convert the PDF's absolute x/y into Word paragraph positioning. This is
-    # intentionally conservative: text remains editable while approximate
-    # coordinates are preserved for visual regression.
     p.paragraph_format.left_indent = Pt(max(0, block.bbox.x0))
-    gap = max(0, block.bbox.y0 - cursor_y)
+    gap = max(0, block.bbox.y0 - cursor_y) * vertical_scale
     if gap:
         p.paragraph_format.space_before = Pt(gap)
     p.paragraph_format.space_after = Pt(0)
@@ -52,20 +49,20 @@ def _new_paragraph(doc, block, cursor_y):
     return p
 
 
-def render_docx(model: DocumentModel, output: Path):
+def render_docx(model: DocumentModel, output: Path, font_scale=1.0, vertical_scale=1.0):
+    """Render editable DOCX with tunable density for automatic page-fit optimization."""
     doc = Document()
-    cursor_y = 0.0
 
     for page_index, page in enumerate(model.pages):
         if page_index:
             section = doc.add_section(WD_SECTION.NEW_PAGE)
-            cursor_y = 0.0
         else:
             section = doc.sections[0]
         _configure_section(section, page)
+        cursor_y = 0.0
 
         for block in page.blocks:
-            p = _new_paragraph(doc, block, cursor_y)
+            p = _new_paragraph(doc, block, cursor_y, vertical_scale)
 
             if block.kind == "image" and block.image:
                 run = p.add_run()
@@ -77,19 +74,17 @@ def render_docx(model: DocumentModel, output: Path):
                 for line in block.lines:
                     for span in line.spans:
                         r = p.add_run(span.text)
-                        _style_run(r, span)
+                        _style_run(r, span, font_scale)
                         r.bold = True
                 cursor_y = max(cursor_y, block.bbox.y1)
                 continue
 
             if block.kind == "list":
-                # Keep the bullet as editable text instead of relying on Word's
-                # automatic list indentation, which is a major source of drift.
                 p.add_run("• ")
                 for line in block.lines:
                     for span in line.spans:
                         r = p.add_run(_clean_bullet(span.text))
-                        _style_run(r, span)
+                        _style_run(r, span, font_scale)
                 cursor_y = max(cursor_y, block.bbox.y1)
                 continue
 
@@ -98,7 +93,7 @@ def render_docx(model: DocumentModel, output: Path):
                     p.add_run().add_break()
                 for span in line.spans:
                     r = p.add_run(span.text)
-                    _style_run(r, span)
+                    _style_run(r, span, font_scale)
             cursor_y = max(cursor_y, block.bbox.y1)
 
     doc.save(output)
