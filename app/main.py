@@ -9,10 +9,11 @@ from app.pipeline import convert_pdf_to_docx
 BASE = Path("/app/data")
 UPLOADS = BASE / "uploads"
 OUTPUT = BASE / "output"
-UPLOADS.mkdir(parents=True, exist_ok=True)
-OUTPUT.mkdir(parents=True, exist_ok=True)
+REPORTS = BASE / "reports"
+for directory in (UPLOADS, OUTPUT, REPORTS):
+    directory.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="PDF to Word Engine", version="0.1.0")
+app = FastAPI(title="PDF to Word Engine", version="0.2.0")
 
 
 @app.get("/health")
@@ -27,9 +28,10 @@ async def convert(file: UploadFile = File(...)):
     task_id = uuid4().hex
     pdf_path = UPLOADS / f"{task_id}.pdf"
     docx_path = OUTPUT / f"{task_id}.docx"
+    work_dir = REPORTS / task_id
     pdf_path.write_bytes(await file.read())
     try:
-        stats = convert_pdf_to_docx(pdf_path, docx_path)
+        stats = convert_pdf_to_docx(pdf_path, docx_path, work_dir=work_dir)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Conversion failed: {exc}") from exc
     finally:
@@ -39,6 +41,7 @@ async def convert(file: UploadFile = File(...)):
         "status": "completed",
         **stats,
         "download_url": f"/api/v1/files/{task_id}",
+        "report_url": f"/api/v1/reports/{task_id}",
     }
 
 
@@ -52,3 +55,11 @@ def download(task_id: str):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"{task_id}.docx",
     )
+
+
+@app.get("/api/v1/reports/{task_id}")
+def report(task_id: str):
+    path = REPORTS / task_id / "comparison.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Comparison report not found")
+    return FileResponse(path, media_type="application/json", filename=f"{task_id}-comparison.json")
