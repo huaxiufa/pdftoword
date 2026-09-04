@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.gemini import pdf_to_structured
 from app.pdf_tools import (
     extract_pages, images_to_pdf, merge_pdfs, pdf_to_images, rotate_pdf,
-    split_pdf, compress_pdf, structured_to_docx, structured_to_xlsx,
+    split_pdf, compress_pdf, pdf_to_docx, structured_to_docx, structured_to_xlsx,
 )
 
 BASE = Path(os.getenv("DATA_DIR", "/app/data")); OUTPUT = BASE / "output"
@@ -59,14 +59,10 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
         elif tool == "images-to-pdf":
             out=OUTPUT/f"{task}.pdf"; images_to_pdf(saved,out)
         elif tool == "pdf-to-word":
-            prompt='''Convert this PDF into structured document content. Return ONLY valid JSON: {"blocks":[{"type":"heading|paragraph|bullet","level":1,"text":"..."}]}. Preserve reading order, headings and bullets. Do not invent content.'''
-            raw=pdf_to_structured(saved[0],prompt).strip()
-            cleaned=raw.removeprefix("```json").removesuffix("```").strip()
-            try:
-                data=json.loads(cleaned)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(502, f"Gemini returned invalid JSON: {exc.msg}")
-            out=OUTPUT/f"{task}.docx"; structured_to_docx(data,out)
+            # Prefer a real layout-aware PDF converter for Word. It preserves
+            # text, images, drawings and tables much better than asking Gemini
+            # to flatten the whole document into paragraphs.
+            out=OUTPUT/f"{task}.docx"; pdf_to_docx(saved[0],out)
         elif tool == "pdf-to-excel":
             prompt='''Extract all tables from this PDF. Return ONLY valid JSON: {"rows":[["cell1","cell2"]]}. Include column headers when present. Preserve values exactly; if there are multiple tables, append them separated by a blank row. Do not invent data.'''
             raw=pdf_to_structured(saved[0],prompt).strip(); cleaned=raw.removeprefix("```json").removesuffix("```").strip()
@@ -82,7 +78,7 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
     except Exception as exc:
         print(f"Tool {tool} failed: {type(exc).__name__}: {exc}", flush=True)
         if tool in {"pdf-to-word", "pdf-to-excel"}:
-            raise HTTPException(502, f"Gemini conversion failed: {str(exc)}") from exc
+            raise HTTPException(502, f"Document conversion failed: {str(exc)}") from exc
         raise HTTPException(500, f"Processing failed: {str(exc)}") from exc
     finally:
         shutil.rmtree(work, ignore_errors=True)
