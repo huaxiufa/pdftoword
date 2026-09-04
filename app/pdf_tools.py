@@ -160,7 +160,6 @@ def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
     wr.append(wt); wp.append(wr); txbx.append(wp); textbox.append(txbx)
     shape.append(textbox); pict.append(shape); run._r.append(pict)
 
-    # Apply the same formatting to the text run inside the textbox.
     rPr = OxmlElement("w:rPr")
     if element.get("bold"):
         rPr.append(OxmlElement("w:b"))
@@ -178,25 +177,73 @@ def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
 
 
 def _add_floating_picture(doc, image_path, left_pt, top_pt, width_pt, height_pt):
+    """Insert an image as a floating Word drawing without relying on python-docx's
+    non-existent CT_Inline.cNvGraphicFramePr property.
+
+    The image remains an independent editable/movable Word picture; the PDF page is
+    never converted to a screenshot.
+    """
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(0)
     run = p.add_run()
     inline = run.add_picture(str(image_path), width=Pt(max(width_pt, 1)))
-    inline_shape = inline._inline
-    extent = inline_shape.extent
+    inline_xml = inline._inline
+
+    # CT_Inline exposes its XML children, but python-docx does not provide a
+    # cNvGraphicFramePr attribute. Move the existing DrawingML nodes into an
+    # anchor instead of accessing a non-existent attribute.
+    doc_pr = inline_xml.find(qn("wp:docPr"))
+    c_nv = inline_xml.find(qn("wp:cNvGraphicFramePr"))
+    graphic = inline_xml.find(qn("a:graphic"))
+    extent = inline_xml.find(qn("wp:extent"))
+    if doc_pr is None or graphic is None or extent is None:
+        return p
+
     anchor = OxmlElement("wp:anchor")
-    anchor.set("distT", "0"); anchor.set("distB", "0"); anchor.set("distL", "0"); anchor.set("distR", "0")
-    anchor.set("simplePos", "0"); anchor.set("relativeHeight", "251658240"); anchor.set("behindDoc", "0")
-    anchor.set("locked", "0"); anchor.set("layoutInCell", "1"); anchor.set("allowOverlap", "1")
-    simple = OxmlElement("wp:simplePos"); simple.set("x", "0"); simple.set("y", "0"); anchor.append(simple)
-    pos_h = OxmlElement("wp:positionH"); pos_h.set("relativeFrom", "page"); off_h = OxmlElement("wp:posOffset"); off_h.text = str(int(left_pt * 12700)); pos_h.append(off_h); anchor.append(pos_h)
-    pos_v = OxmlElement("wp:positionV"); pos_v.set("relativeFrom", "page"); off_v = OxmlElement("wp:posOffset"); off_v.text = str(int(top_pt * 12700)); pos_v.append(off_v); anchor.append(pos_v)
-    anchor.append(inline_shape.extent)
-    anchor.append(inline_shape.docPr)
-    anchor.append(inline_shape.cNvGraphicFramePr)
-    anchor.append(inline_shape.graphic)
-    inline_shape.getparent().replace(inline_shape, anchor)
+    anchor.set("distT", "0")
+    anchor.set("distB", "0")
+    anchor.set("distL", "0")
+    anchor.set("distR", "0")
+    anchor.set("simplePos", "0")
+    anchor.set("relativeHeight", "251658240")
+    anchor.set("behindDoc", "0")
+    anchor.set("locked", "0")
+    anchor.set("layoutInCell", "1")
+    anchor.set("allowOverlap", "1")
+
+    simple = OxmlElement("wp:simplePos")
+    simple.set("x", "0")
+    simple.set("y", "0")
+    anchor.append(simple)
+
+    pos_h = OxmlElement("wp:positionH")
+    pos_h.set("relativeFrom", "page")
+    off_h = OxmlElement("wp:posOffset")
+    off_h.text = str(int(left_pt * 12700))
+    pos_h.append(off_h)
+    anchor.append(pos_h)
+
+    pos_v = OxmlElement("wp:positionV")
+    pos_v.set("relativeFrom", "page")
+    off_v = OxmlElement("wp:posOffset")
+    off_v.text = str(int(top_pt * 12700))
+    pos_v.append(off_v)
+    anchor.append(pos_v)
+
+    anchor.append(extent)
+
+    wrap = OxmlElement("wp:wrapNone")
+    anchor.append(wrap)
+
+    anchor.append(doc_pr)
+    if c_nv is not None:
+        anchor.append(c_nv)
+    anchor.append(graphic)
+
+    parent = inline_xml.getparent()
+    if parent is not None:
+        parent.replace(inline_xml, anchor)
     return p
 
 
@@ -247,8 +294,6 @@ def _render_table(doc, page, element, page_width, page_height):
                     cell.width = col_width
     except Exception:
         pass
-    # Keep the table editable. Its placement is represented by a small anchored
-    # paragraph before it; Word may reflow complex tables, but cells remain native.
     spacer = doc.add_paragraph()
     spacer.paragraph_format.space_before = Pt(max(0, y))
     spacer.paragraph_format.space_after = Pt(0)
@@ -282,7 +327,6 @@ def gemini_layout_to_docx(source_pdf, layout, output):
             elements = []
             for col in columns:
                 elements.extend(col.get("elements", []) or [])
-            # Some models return elements directly on the page.
             elements.extend(gem_page.get("elements", []) or [])
             elements.sort(key=lambda e: (float(e.get("y", 0)), float(e.get("x", 0))))
             for element in elements:
@@ -302,7 +346,6 @@ def gemini_layout_to_docx(source_pdf, layout, output):
                 elif kind == "table":
                     _render_table(doc, page, element, width_pt, height_pt)
                 elif kind == "line":
-                    # Use a one-cell paragraph border as an editable Word line.
                     p = doc.add_paragraph(); p.paragraph_format.space_before = Pt(y); p.paragraph_format.space_after = Pt(0)
                     pPr = p._p.get_or_add_pPr(); borders = OxmlElement("w:pBdr"); bottom = OxmlElement("w:bottom")
                     bottom.set(qn("w:val"), "single"); bottom.set(qn("w:sz"), "6"); bottom.set(qn("w:space"), "0"); bottom.set(qn("w:color"), _hex_color(element.get("color", "808080"))); borders.append(bottom); pPr.append(borders)
