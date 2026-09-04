@@ -2,7 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 import os
 import shutil
-import tempfile
+import json
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -60,14 +60,30 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
             out=OUTPUT/f"{task}.pdf"; images_to_pdf(saved,out)
         elif tool == "pdf-to-word":
             prompt='''Convert this PDF into structured document content. Return ONLY valid JSON: {"blocks":[{"type":"heading|paragraph|bullet","level":1,"text":"..."}]}. Preserve reading order, headings and bullets. Do not invent content.'''
-            data=__import__('json').loads(pdf_to_structured(saved[0],prompt).strip().removeprefix("```json").removesuffix("```").strip())
+            raw=pdf_to_structured(saved[0],prompt).strip()
+            cleaned=raw.removeprefix("```json").removesuffix("```").strip()
+            try:
+                data=json.loads(cleaned)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(502, f"Gemini returned invalid JSON: {exc.msg}")
             out=OUTPUT/f"{task}.docx"; structured_to_docx(data,out)
         elif tool == "pdf-to-excel":
             prompt='''Extract all tables from this PDF. Return ONLY valid JSON: {"rows":[["cell1","cell2"]]}. Include column headers when present. Preserve values exactly; if there are multiple tables, append them separated by a blank row. Do not invent data.'''
-            raw=pdf_to_structured(saved[0],prompt).strip(); data=__import__('json').loads(raw.removeprefix("```json").removesuffix("```").strip())
+            raw=pdf_to_structured(saved[0],prompt).strip(); cleaned=raw.removeprefix("```json").removesuffix("```").strip()
+            try:
+                data=json.loads(cleaned)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(502, f"Gemini returned invalid JSON: {exc.msg}")
             out=OUTPUT/f"{task}.xlsx"; structured_to_xlsx(data,out)
         else: raise HTTPException(400,"Unsupported tool")
         return {"download_url":f"/api/v1/files/{out.name}","filename":out.name}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"Tool {tool} failed: {type(exc).__name__}: {exc}", flush=True)
+        if tool in {"pdf-to-word", "pdf-to-excel"}:
+            raise HTTPException(502, f"Gemini conversion failed: {str(exc)}") from exc
+        raise HTTPException(500, f"Processing failed: {str(exc)}") from exc
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
