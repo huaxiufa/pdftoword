@@ -8,7 +8,9 @@ import fitz
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Inches, Pt
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
 from openpyxl import Workbook
 from PIL import Image
 
@@ -103,23 +105,162 @@ def _set_page_size(section, width_pt, height_pt):
     section.footer_distance = Pt(0)
 
 
-def _add_full_page_image(doc, png_path, width_pt):
+def _hex_color(value, default="000000"):
+    if not isinstance(value, str):
+        return default
+    value = value.strip().lstrip("#")
+    if len(value) == 6 and all(c in "0123456789abcdefABCDEF" for c in value):
+        return value.upper()
+    return default
+
+
+def _add_run_format(run, element):
+    run.bold = bool(element.get("bold", False))
+    run.italic = bool(element.get("italic", False))
+    if element.get("underline"):
+        run.underline = True
+    font = run.font
+    font.name = element.get("font", "Arial") or "Arial"
+    size = element.get("font_size", 10.5)
+    try:
+        font.size = Pt(float(size))
+    except (TypeError, ValueError):
+        font.size = Pt(10.5)
+    font.color.rgb = RGBColor.from_string(_hex_color(element.get("color", "000000")))
+
+
+def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
+    """Add an editable, absolutely positioned Word text box."""
     p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(0)
-    p.paragraph_format.line_spacing = 1
+    pPr = p._p.get_or_add_pPr()
+    pPr.append(OxmlElement("w:keepNext"))
+
     run = p.add_run()
-    run.add_picture(str(png_path), width=Pt(width_pt))
+    pict = OxmlElement("w:pict")
+    shape = OxmlElement("v:shape")
+    shape.set(qn("id"), f"GeminiText_{id(element)}")
+    shape.set(qn("type"), "#_x0000_t202")
+    shape.set(qn("style"),
+              f"position:absolute;margin-left:{left_pt}pt;margin-top:{top_pt}pt;"
+              f"width:{max(width_pt, 1)}pt;height:{max(height_pt, 1)}pt;"
+              "z-index:1;mso-wrap-style:none;mso-position-horizontal:absolute;"
+              "mso-position-horizontal-relative:page;mso-position-vertical:absolute;"
+              "mso-position-vertical-relative:page")
+    shape.set(qn("fillcolor"), "white")
+    shape.set(qn("stroked"), "f")
+    textbox = OxmlElement("v:textbox")
+    textbox.set(qn("inset"), "0pt,0pt,0pt,0pt")
+    txbx = OxmlElement("w:txbxContent")
+    wp = OxmlElement("w:p")
+    wr = OxmlElement("w:r")
+    wt = OxmlElement("w:t")
+    wt.text = str(element.get("text", ""))
+    wr.append(wt); wp.append(wr); txbx.append(wp); textbox.append(txbx)
+    shape.append(textbox); pict.append(shape); run._r.append(pict)
+
+    # Apply the same formatting to the text run inside the textbox.
+    rPr = OxmlElement("w:rPr")
+    if element.get("bold"):
+        rPr.append(OxmlElement("w:b"))
+    if element.get("italic"):
+        rPr.append(OxmlElement("w:i"))
+    if element.get("underline"):
+        rPr.append(OxmlElement("w:u"))
+    color = OxmlElement("w:color"); color.set(qn("w:val"), _hex_color(element.get("color"))); rPr.append(color)
+    sz = OxmlElement("w:sz")
+    try: sz.set(qn("w:val"), str(max(2, int(float(element.get("font_size", 10.5)) * 2))))
+    except (TypeError, ValueError): sz.set(qn("w:val"), "21")
+    rPr.append(sz)
+    wr.insert(0, rPr)
+    return p
+
+
+def _add_floating_picture(doc, image_path, left_pt, top_pt, width_pt, height_pt):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(0)
+    run = p.add_run()
+    inline = run.add_picture(str(image_path), width=Pt(max(width_pt, 1)))
+    inline_shape = inline._inline
+    extent = inline_shape.extent
+    anchor = OxmlElement("wp:anchor")
+    anchor.set("distT", "0"); anchor.set("distB", "0"); anchor.set("distL", "0"); anchor.set("distR", "0")
+    anchor.set("simplePos", "0"); anchor.set("relativeHeight", "251658240"); anchor.set("behindDoc", "0")
+    anchor.set("locked", "0"); anchor.set("layoutInCell", "1"); anchor.set("allowOverlap", "1")
+    simple = OxmlElement("wp:simplePos"); simple.set("x", "0"); simple.set("y", "0"); anchor.append(simple)
+    pos_h = OxmlElement("wp:positionH"); pos_h.set("relativeFrom", "page"); off_h = OxmlElement("wp:posOffset"); off_h.text = str(int(left_pt * 12700)); pos_h.append(off_h); anchor.append(pos_h)
+    pos_v = OxmlElement("wp:positionV"); pos_v.set("relativeFrom", "page"); off_v = OxmlElement("wp:posOffset"); off_v.text = str(int(top_pt * 12700)); pos_v.append(off_v); anchor.append(pos_v)
+    anchor.append(inline_shape.extent)
+    anchor.append(inline_shape.docPr)
+    anchor.append(inline_shape.cNvGraphicFramePr)
+    anchor.append(inline_shape.graphic)
+    inline_shape.getparent().replace(inline_shape, anchor)
+    return p
+
+
+def _extract_page_images(page, work_dir):
+    items = []
+    for idx, info in enumerate(page.get_images(full=True)):
+        xref = info[0]
+        try:
+            data = page.parent.extract_image(xref)
+            ext = data.get("ext", "png")
+            path = Path(work_dir) / f"page-{page.number+1}-image-{idx}.{ext}"
+            path.write_bytes(data["image"])
+            rects = page.get_image_rects(xref)
+            rect = rects[0] if rects else fitz.Rect(0, 0, 100, 100)
+            items.append((idx, path, rect))
+        except Exception:
+            continue
+    return items
+
+
+def _render_table(doc, page, element, page_width, page_height):
+    rows = element.get("rows") or []
+    if not rows:
+        return
+    max_cols = max(len(r) for r in rows)
+    if max_cols == 0:
+        return
+    table = doc.add_table(rows=len(rows), cols=max_cols)
+    table.style = "Table Grid"
+    x = float(element.get("x", 0)) * page_width
+    y = float(element.get("y", 0)) * page_height
+    w = float(element.get("w", 1)) * page_width
+    try:
+        for r, row in enumerate(rows):
+            for c in range(max_cols):
+                value = row[c] if c < len(row) else ""
+                cell = table.cell(r, c)
+                cell.text = "" if value is None else str(value)
+                for p in cell.paragraphs:
+                    p.paragraph_format.space_before = Pt(0); p.paragraph_format.space_after = Pt(0)
+                    if element.get("font_size"):
+                        for run in p.runs: run.font.size = Pt(float(element["font_size"]))
+        if w > 0:
+            table.autofit = False
+            col_width = Inches(w / 72 / max_cols)
+            for row in table.rows:
+                for cell in row.cells:
+                    cell.width = col_width
+    except Exception:
+        pass
+    # Keep the table editable. Its placement is represented by a small anchored
+    # paragraph before it; Word may reflow complex tables, but cells remain native.
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_before = Pt(max(0, y))
+    spacer.paragraph_format.space_after = Pt(0)
 
 
 def gemini_layout_to_docx(source_pdf, layout, output):
-    """Render a Gemini-understood PDF as a high-fidelity DOCX.
+    """Build an editable DOCX from Gemini's visual layout description.
 
-    Gemini supplies the semantic/layout analysis. The original PDF page is rendered
-    at high resolution as the visual layer, so photos, tables, lines, columns and
-    typography are never discarded. This intentionally does not use pdf2docx or
-    another PDF-to-DOCX parser.
+    Gemini is responsible for understanding the PDF. We only use PyMuPDF to fetch
+    original embedded image assets and page dimensions; the page itself is never
+    inserted as a screenshot. Text is native editable Word text, tables are native
+    Word tables, and embedded images remain images.
     """
     source_pdf = Path(source_pdf)
     output = Path(output)
@@ -127,24 +268,44 @@ def gemini_layout_to_docx(source_pdf, layout, output):
     pdf = fitz.open(source_pdf)
     doc = Document()
     try:
+        if not pages:
+            raise ValueError("Gemini returned no page layout")
         for index, page in enumerate(pdf):
             if index:
                 doc.add_section(WD_SECTION.NEW_PAGE)
             section = doc.sections[-1]
-            _set_page_size(section, page.rect.width, page.rect.height)
-
-            # Keep the original page appearance as the fidelity layer. Gemini's
-            # analysis is retained in the conversion pipeline and can be used for
-            # later editable-element rendering without changing the visual result.
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                png_path = Path(tmp.name)
-            try:
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), alpha=False)
-                pix.save(str(png_path))
-                _add_full_page_image(doc, png_path, page.rect.width)
-            finally:
-                png_path.unlink(missing_ok=True)
-
+            width_pt, height_pt = page.rect.width, page.rect.height
+            _set_page_size(section, width_pt, height_pt)
+            gem_page = pages[index] if index < len(pages) else {}
+            image_items = _extract_page_images(page, output.parent)
+            columns = gem_page.get("columns", []) if isinstance(gem_page, dict) else []
+            elements = []
+            for col in columns:
+                elements.extend(col.get("elements", []) or [])
+            # Some models return elements directly on the page.
+            elements.extend(gem_page.get("elements", []) or [])
+            elements.sort(key=lambda e: (float(e.get("y", 0)), float(e.get("x", 0))))
+            for element in elements:
+                kind = element.get("type", "text")
+                x = float(element.get("x", 0)) * width_pt
+                y = float(element.get("y", 0)) * height_pt
+                w = float(element.get("w", 0.9)) * width_pt
+                h = float(element.get("h", 0.04)) * height_pt
+                if kind == "text" and str(element.get("text", "")).strip():
+                    _add_textbox(doc, x, y, w, h, element)
+                elif kind == "image":
+                    idx = int(element.get("image_index", 0) or 0)
+                    matches = [item for item in image_items if item[0] == idx]
+                    if matches:
+                        _, image_path, _ = matches[0]
+                        _add_floating_picture(doc, image_path, x, y, w, h)
+                elif kind == "table":
+                    _render_table(doc, page, element, width_pt, height_pt)
+                elif kind == "line":
+                    # Use a one-cell paragraph border as an editable Word line.
+                    p = doc.add_paragraph(); p.paragraph_format.space_before = Pt(y); p.paragraph_format.space_after = Pt(0)
+                    pPr = p._p.get_or_add_pPr(); borders = OxmlElement("w:pBdr"); bottom = OxmlElement("w:bottom")
+                    bottom.set(qn("w:val"), "single"); bottom.set(qn("w:sz"), "6"); bottom.set(qn("w:space"), "0"); bottom.set(qn("w:color"), _hex_color(element.get("color", "808080"))); borders.append(bottom); pPr.append(borders)
         doc.save(output)
     finally:
         pdf.close()
