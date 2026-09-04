@@ -118,10 +118,8 @@ def _hex_color(value, default="000000"):
 def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
     """Add an editable, absolutely positioned Word text box.
 
-    VML elements are created with an explicit namespace because python-docx does
-    not register the VML ``v`` prefix in its OxmlElement resolver. The old
-    OxmlElement("v:shape") path raised KeyError('v') and caused PDF-to-Word to
-    return 502 before a DOCX could be written.
+    VML attributes such as id/style/type are plain VML attributes and must not
+    be passed through python-docx qn(), which expects a prefix:tag name.
     """
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
@@ -132,18 +130,18 @@ def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
     run = p.add_run()
     pict = OxmlElement("w:pict")
     shape = etree.Element(f"{{{VML_NS}}}shape")
-    shape.set(qn("id"), f"GeminiText_{id(element)}")
-    shape.set(qn("type"), "#_x0000_t202")
-    shape.set(qn("style"),
+    shape.set("id", f"GeminiText_{id(element)}")
+    shape.set("type", "#_x0000_t202")
+    shape.set("style",
               f"position:absolute;margin-left:{left_pt}pt;margin-top:{top_pt}pt;"
               f"width:{max(width_pt, 1)}pt;height:{max(height_pt, 1)}pt;"
               "z-index:1;mso-wrap-style:none;mso-position-horizontal:absolute;"
               "mso-position-horizontal-relative:page;mso-position-vertical:absolute;"
               "mso-position-vertical-relative:page")
-    shape.set(qn("fillcolor"), "white")
-    shape.set(qn("stroked"), "f")
+    shape.set("fillcolor", "white")
+    shape.set("stroked", "f")
     textbox = etree.SubElement(shape, f"{{{VML_NS}}}textbox")
-    textbox.set(qn("inset"), "0pt,0pt,0pt,0pt")
+    textbox.set("inset", "0pt,0pt,0pt,0pt")
     txbx = OxmlElement("w:txbxContent")
     wp = OxmlElement("w:p")
     wr = OxmlElement("w:r")
@@ -181,7 +179,6 @@ def _add_floating_picture(doc, image_path, left_pt, top_pt, width_pt, height_pt)
     inline_xml = inline._inline
 
     doc_pr = inline_xml.find(qn("wp:docPr"))
-    c_nv = inline_xml.find(qn("wp:cNvGraphicFramePr"))
     graphic = inline_xml.find(qn("a:graphic"))
     extent = inline_xml.find(qn("wp:extent"))
     if doc_pr is None or graphic is None or extent is None:
@@ -210,6 +207,7 @@ def _add_floating_picture(doc, image_path, left_pt, top_pt, width_pt, height_pt)
     anchor.append(extent)
     anchor.append(OxmlElement("wp:wrapNone"))
     anchor.append(doc_pr)
+    c_nv = inline_xml.find(qn("wp:cNvGraphicFramePr"))
     if c_nv is not None:
         anchor.append(c_nv)
     anchor.append(graphic)
