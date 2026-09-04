@@ -1,74 +1,85 @@
 from pathlib import Path
 from uuid import uuid4
+import os
+import shutil
+import tempfile
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.pipeline import convert_pdf_to_docx
+from app.gemini import pdf_to_structured
+from app.pdf_tools import (
+    extract_pages, images_to_pdf, merge_pdfs, pdf_to_images, rotate_pdf,
+    split_pdf, compress_pdf, structured_to_docx, structured_to_xlsx,
+)
 
-BASE = Path("/app/data")
-UPLOADS = BASE / "uploads"
-OUTPUT = BASE / "output"
-REPORTS = BASE / "reports"
-for directory in (UPLOADS, OUTPUT, REPORTS):
-    directory.mkdir(parents=True, exist_ok=True)
+BASE = Path(os.getenv("DATA_DIR", "/app/data")); OUTPUT = BASE / "output"
+UPLOADS = BASE / "uploads"; OUTPUT.mkdir(parents=True, exist_ok=True); UPLOADS.mkdir(parents=True, exist_ok=True)
+app = FastAPI(title="PDF Toolbox", version="1.0.0")
 
-app = FastAPI(title="PDF to Word Engine", version="0.2.0")
-
+TOOLS = {"merge","split","extract","rotate","compress","pdf-to-word","pdf-to-excel","pdf-to-images","images-to-pdf"}
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "pdftoword", "version": app.version}
+    return {"status":"ok", "gemini": bool(os.getenv("GEMINI_API_KEY")), "model": os.getenv("GEMINI_MODEL", "gemini-3.7-flash")}
 
-
-@app.post("/api/v1/convert")
-async def convert(file: UploadFile = File(...)):
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
-    task_id = uuid4().hex
-    pdf_path = UPLOADS / f"{task_id}.pdf"
-    docx_path = OUTPUT / f"{task_id}.docx"
-    work_dir = REPORTS / task_id
-    pdf_path.write_bytes(await file.read())
+@app.post("/api/v1/tools/{tool}")
+async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", angle: int = 90):
+    if tool not in TOOLS: raise HTTPException(404, "Unknown tool")
+    if not files: raise HTTPException(400, "No files")
+    task = uuid4().hex; work = BASE / "jobs" / task; work.mkdir(parents=True)
+    saved=[]
     try:
-        stats = convert_pdf_to_docx(pdf_path, docx_path, work_dir=work_dir)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Conversion failed: {exc}") from exc
+        for i,f in enumerate(files):
+            if not f.filename: continue
+            ext=Path(f.filename).suffix.lower()
+            if tool not in {"images-to-pdf"} and ext != ".pdf": raise HTTPException(400,"PDF required")
+            if tool == "images-to-pdf" and ext not in {".png",".jpg",".jpeg",".webp"}: raise HTTPException(400,"Image required")
+            p=work/f"input-{i}{ext}"; p.write_bytes(await f.read()); saved.append(p)
+        if tool == "merge":
+            out=OUTPUT/f"{task}.pdf"; merge_pdfs(saved,out)
+        elif tool == "split":
+            targets=split_pdf(saved[0], work); shutil.make_archive(str(OUTPUT/task), "zip", work); return {"download_url":f"/api/v1/files/{task}.zip","count":len(targets)}
+        elif tool == "extract":
+            nums=[]
+            for part in pages.split(","):
+                if "-" in part:
+                    a,b=map(int,part.split("-")); nums.extend(range(a,b+1))
+                elif part.strip(): nums.append(int(part))
+            if not nums: raise HTTPException(400,"pages is required, e.g. 1,3-5")
+            out=OUTPUT/f"{task}.pdf"; extract_pages(saved[0],nums,out)
+        elif tool == "rotate":
+            if angle not in {90,180,270}: raise HTTPException(400,"angle must be 90, 180 or 270")
+            out=OUTPUT/f"{task}.pdf"; rotate_pdf(saved[0],angle,out)
+        elif tool == "compress":
+            out=OUTPUT/f"{task}.pdf"; compress_pdf(saved[0],out)
+        elif tool == "pdf-to-images":
+            targets=pdf_to_images(saved[0],work,"png"); shutil.make_archive(str(OUTPUT/task),"zip",work); return {"download_url":f"/api/v1/files/{task}.zip","count":len(targets)}
+        elif tool == "images-to-pdf":
+            out=OUTPUT/f"{task}.pdf"; images_to_pdf(saved,out)
+        elif tool == "pdf-to-word":
+            prompt='''Convert this PDF into structured document content. Return ONLY valid JSON: {"blocks":[{"type":"heading|paragraph|bullet","level":1,"text":"..."}]}. Preserve reading order, headings and bullets. Do not invent content.'''
+            data=__import__('json').loads(pdf_to_structured(saved[0],prompt).strip().removeprefix("```json").removesuffix("```").strip())
+            out=OUTPUT/f"{task}.docx"; structured_to_docx(data,out)
+        elif tool == "pdf-to-excel":
+            prompt='''Extract all tables from this PDF. Return ONLY valid JSON: {"rows":[["cell1","cell2"]]}. Include column headers when present. Preserve values exactly; if there are multiple tables, append them separated by a blank row. Do not invent data.'''
+            raw=pdf_to_structured(saved[0],prompt).strip(); data=__import__('json').loads(raw.removeprefix("```json").removesuffix("```").strip())
+            out=OUTPUT/f"{task}.xlsx"; structured_to_xlsx(data,out)
+        else: raise HTTPException(400,"Unsupported tool")
+        return {"download_url":f"/api/v1/files/{out.name}","filename":out.name}
     finally:
-        pdf_path.unlink(missing_ok=True)
-    return {
-        "task_id": task_id,
-        "status": "completed",
-        "version": app.version,
-        **stats,
-        "download_url": f"/api/v1/files/{task_id}",
-        "report_url": f"/api/v1/reports/{task_id}",
-        "debug_url": f"/api/v1/reports/{task_id}/debug.pdf",
-    }
+        shutil.rmtree(work, ignore_errors=True)
 
+@app.get("/api/v1/files/{filename}")
+def download(filename: str):
+    safe=Path(filename).name; path=OUTPUT/safe
+    if not path.exists(): raise HTTPException(404,"File not found")
+    media="application/octet-stream"
+    if path.suffix==".pdf": media="application/pdf"
+    elif path.suffix==".docx": media="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif path.suffix==".xlsx": media="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif path.suffix==".zip": media="application/zip"
+    return FileResponse(path,media_type=media,filename=safe)
 
-@app.get("/api/v1/files/{task_id}")
-def download(task_id: str):
-    path = OUTPUT / f"{task_id}.docx"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename=f"{task_id}.docx")
-
-
-@app.get("/api/v1/reports/{task_id}")
-def report(task_id: str):
-    path = REPORTS / task_id / "comparison.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Comparison report not found")
-    return FileResponse(path, media_type="application/json", filename=f"{task_id}-comparison.json")
-
-
-@app.get("/api/v1/reports/{task_id}/{asset_path:path}")
-def report_asset(task_id: str, asset_path: str):
-    root = (REPORTS / task_id).resolve()
-    path = (root / asset_path).resolve()
-    if root not in path.parents and path != root:
-        raise HTTPException(status_code=400, detail="Invalid report path")
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Report asset not found")
-    return FileResponse(path)
+app.mount("/", StaticFiles(directory="/app/web", html=True), name="web")
