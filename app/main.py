@@ -18,7 +18,7 @@ app = FastAPI(title="PDF to Word Engine", version="0.2.0")
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "pdftoword"}
+    return {"status": "ok", "service": "pdftoword", "version": app.version}
 
 
 @app.post("/api/v1/convert")
@@ -39,9 +39,11 @@ async def convert(file: UploadFile = File(...)):
     return {
         "task_id": task_id,
         "status": "completed",
+        "version": app.version,
         **stats,
         "download_url": f"/api/v1/files/{task_id}",
         "report_url": f"/api/v1/reports/{task_id}",
+        "debug_url": f"/api/v1/reports/{task_id}/debug.pdf",
     }
 
 
@@ -50,11 +52,7 @@ def download(task_id: str):
     path = OUTPUT / f"{task_id}.docx"
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=f"{task_id}.docx",
-    )
+    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename=f"{task_id}.docx")
 
 
 @app.get("/api/v1/reports/{task_id}")
@@ -63,3 +61,14 @@ def report(task_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Comparison report not found")
     return FileResponse(path, media_type="application/json", filename=f"{task_id}-comparison.json")
+
+
+@app.get("/api/v1/reports/{task_id}/{asset_path:path}")
+def report_asset(task_id: str, asset_path: str):
+    root = (REPORTS / task_id).resolve()
+    path = (root / asset_path).resolve()
+    if root not in path.parents and path != root:
+        raise HTTPException(status_code=400, detail="Invalid report path")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Report asset not found")
+    return FileResponse(path)
