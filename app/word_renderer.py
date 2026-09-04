@@ -1,6 +1,8 @@
 from pathlib import Path
+from copy import deepcopy
 
 import fitz
+from PIL import Image
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
@@ -215,11 +217,39 @@ def _extract_images(page, work_dir):
     for info in page.get_images(full=True):
         try:
             xref = info[0]
-            data = page.parent.extract_image(xref)
-            ext = data.get("ext", "png")
-            path = Path(work_dir) / f"p{page.number + 1}_img{xref}.{ext}"
-            path.write_bytes(data["image"])
+            smask = info[1] if len(info) > 1 else 0
+            if smask:
+                base = fitz.Pixmap(page.parent, xref)
+                mask = fitz.Pixmap(page.parent, smask)
+                pix = fitz.Pixmap(base, mask)
+                path = Path(work_dir) / f"p{page.number + 1}_img{xref}.png"
+                pix.save(str(path))
+            else:
+                data = page.parent.extract_image(xref)
+                ext = data.get("ext", "png")
+                path = Path(work_dir) / f"p{page.number + 1}_img{xref}.{ext}"
+                path.write_bytes(data["image"])
             for rect in page.get_image_rects(xref):
+                # Word/LibreOffice may shift an anchored image that extends outside
+                # the page. Crop only the out-of-page part so the remaining visible
+                # pixels can be anchored exactly at the PDF page boundary.
+                clipped = rect & page.rect
+                if clipped.is_empty:
+                    continue
+                if clipped != rect:
+                    src = Image.open(path).convert("RGBA")
+                    sx = src.width / rect.width
+                    sy = src.height / rect.height
+                    box = (
+                        max(0, round((clipped.x0 - rect.x0) * sx)),
+                        max(0, round((clipped.y0 - rect.y0) * sy)),
+                        min(src.width, round((clipped.x1 - rect.x0) * sx)),
+                        min(src.height, round((clipped.y1 - rect.y0) * sy)),
+                    )
+                    cropped_path = Path(work_dir) / f"p{page.number + 1}_img{xref}_{len(result)}.png"
+                    src.crop(box).save(cropped_path, "PNG")
+                    path = cropped_path
+                    rect = clipped
                 key = (xref, round(rect.x0, 3), round(rect.y0, 3), round(rect.x1, 3), round(rect.y1, 3))
                 if key not in seen:
                     result.append({"path": path, "rect": rect, "xref": xref})
@@ -248,7 +278,8 @@ def _match_image(image_map, element, page_rect):
     return min(image_map, key=score)
 
 
-def _add_floating_image(doc, image_info, element, page_rect):
+def _add_floating_image(cell, image_info, element, page_rect):
+    """Insert an absolutely positioned image into the current page's layout cell."""
     path = image_info["path"]
     actual = image_info["rect"]
     width_pt = max(1.0, actual.width)
@@ -260,16 +291,14 @@ def _add_floating_image(doc, image_info, element, page_rect):
         x_pt = _safe_float(element.get("x")) * page_rect.width
         y_pt = _safe_float(element.get("y")) * page_rect.height
 
-    p = doc.add_paragraph()
+    p = cell.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.line_spacing = 1
     run = p.add_run()
     inline = run.add_picture(str(path), width=Inches(width_pt / 72.0), height=Inches(height_pt / 72.0))
     drawing = inline._inline
 
-    # python-docx versions differ in which CT_Inline children are exposed as
-    # properties.  Keep the actual XML children instead of accessing
-    # drawing.cNvGraphicFramePr, which is not available in all versions.
     anchor = OxmlElement("wp:anchor")
     anchor.set("distT", "0")
     anchor.set("distB", "0")
@@ -290,21 +319,17 @@ def _add_floating_image(doc, image_info, element, page_rect):
     pos_h = OxmlElement("wp:positionH")
     pos_h.set("relativeFrom", "page")
     off_h = OxmlElement("wp:posOffset")
-    off_h.text = str(int(max(0, x_pt) * 12700))
+    off_h.text = str(round(x_pt * 12700))
     pos_h.append(off_h)
     anchor.append(pos_h)
 
     pos_v = OxmlElement("wp:positionV")
     pos_v.set("relativeFrom", "page")
     off_v = OxmlElement("wp:posOffset")
-    off_v.text = str(int(max(0, y_pt) * 12700))
+    off_v.text = str(round(y_pt * 12700))
     pos_v.append(off_v)
     anchor.append(pos_v)
 
-    # Reuse the complete inline drawing children (extent, docPr,
-    # cNvGraphicFramePr, graphic) without relying on python-docx property
-    # names.  Deep-copy each node so the source inline can be removed cleanly.
-    from copy import deepcopy
     for child in list(drawing):
         anchor.append(deepcopy(child))
 
@@ -312,7 +337,7 @@ def _add_floating_image(doc, image_info, element, page_rect):
     drawing.getparent().replace(drawing, anchor)
 
 
-def _render_column(cell, elements, image_map, page_rect, doc):
+def _render_column(cell, elements, image_map, page_rect):
     cell.text = ""
     for element in elements:
         kind = str(element.get("type") or "text").lower()
@@ -326,7 +351,7 @@ def _render_column(cell, elements, image_map, page_rect, doc):
         elif kind == "image":
             info = _match_image(image_map, element, page_rect)
             if info:
-                _add_floating_image(doc, info, element, page_rect)
+                _add_floating_image(cell, info, element, page_rect)
         elif kind == "line":
             p = cell.add_paragraph()
             p.paragraph_format.space_before = Pt(2)
@@ -354,52 +379,36 @@ def render_editable_pdf(source_pdf, layout, output):
     source_pdf = Path(source_pdf)
     output = Path(output)
     pages = layout.get("pages", []) if isinstance(layout, dict) else []
-    if not isinstance(pages, list):
-        pages = []
-    pdf = fitz.open(source_pdf)
     doc = Document()
-    work_dir = output.parent / f".pdf-images-{output.stem}"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    try:
+    first = True
+    with fitz.open(source_pdf) as pdf:
         for page_index, page in enumerate(pdf):
-            if page_index:
+            if not first:
                 doc.add_section(WD_SECTION.NEW_PAGE)
+            first = False
             section = doc.sections[-1]
-            section.page_width = Pt(page.rect.width)
-            section.page_height = Pt(page.rect.height)
-            section.top_margin = Pt(0)
-            section.bottom_margin = Pt(0)
-            section.left_margin = Pt(0)
-            section.right_margin = Pt(0)
-            section.header_distance = Pt(0)
-            section.footer_distance = Pt(0)
+            section.page_width = Inches(page.rect.width / 72.0)
+            section.page_height = Inches(page.rect.height / 72.0)
+            section.top_margin = Inches(0)
+            section.bottom_margin = Inches(0)
+            section.left_margin = Inches(0)
+            section.right_margin = Inches(0)
 
-            gem_page = pages[page_index] if page_index < len(pages) and isinstance(pages[page_index], dict) else {}
+            table = doc.add_table(rows=1, cols=1)
+            table.autofit = False
+            table.allow_autofit = False
+            table.width = Inches(page.rect.width / 72.0)
+            cell = table.cell(0, 0)
+            cell.width = Inches(page.rect.width / 72.0)
+            _remove_cell_margins(cell)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+
+            page_layout = pages[page_index] if page_index < len(pages) and isinstance(pages[page_index], dict) else {}
+            elements = _page_elements(page_layout)
+            work_dir = output.parent / f".pdf_images_{page_index + 1}"
+            work_dir.mkdir(parents=True, exist_ok=True)
             image_map = _extract_images(page, work_dir)
-            columns = _column_elements(gem_page)
-            visible_columns = [c for c in columns if c["elements"]] or columns[:1]
+            _render_column(cell, elements, image_map, page.rect)
 
-            layout_table = doc.add_table(rows=1, cols=len(visible_columns))
-            _remove_table_borders(layout_table)
-            _set_table_layout(layout_table, page.rect.width)
-            total_w = page.rect.width
-            total_detected = sum(c["w"] for c in visible_columns) or 1.0
-            for i, col in enumerate(visible_columns):
-                cell = layout_table.cell(0, i)
-                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-                _remove_cell_margins(cell)
-                width = max(18.0, (col["w"] / total_detected) * total_w)
-                cell.width = Inches(width / 72.0)
-                _render_column(cell, col["elements"], image_map, page.rect, doc)
-        doc.save(output)
-    finally:
-        pdf.close()
-        for p in work_dir.glob("*"):
-            try:
-                p.unlink()
-            except Exception:
-                pass
-        try:
-            work_dir.rmdir()
-        except Exception:
-            pass
+    output.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output)
