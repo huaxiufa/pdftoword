@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import re
 import time
 from pathlib import Path
@@ -46,12 +47,28 @@ def _model_candidates():
     if configured.strip():
         raw = [x.strip() for x in configured.split(",") if x.strip()]
     else:
-        raw = [MODEL, FALLBACK_MODEL]
+        # Keep the configured models first, then use several independent
+        # fallbacks. A 503 is often model-capacity specific, so changing
+        # models is more useful than repeatedly hammering one endpoint.
+        raw = [
+            MODEL,
+            FALLBACK_MODEL,
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
+        ]
     result = []
     for value in raw:
         if value and value not in result:
             result.append(value)
     return result
+
+
+def _sleep_before_retry(attempt: int):
+    # Exponential backoff with small jitter: 1.5s, 3s, 6s...
+    delay = min(12.0, 1.5 * (2 ** attempt)) + random.uniform(0.0, 0.75)
+    time.sleep(delay)
 
 
 def _generate_with_fallback(c, uploaded, prompt):
@@ -60,6 +77,8 @@ def _generate_with_fallback(c, uploaded, prompt):
         raise RuntimeError("No Gemini models configured")
     errors = []
     for model in models:
+        # Two attempts per model. If capacity is exhausted on a model, move
+        # quickly to the next model instead of spending the whole request on it.
         for attempt in range(2):
             try:
                 print(f"Gemini PDF conversion: model={model} attempt={attempt + 1}/2", flush=True)
@@ -78,20 +97,20 @@ def _generate_with_fallback(c, uploaded, prompt):
                 if not _is_retryable(exc):
                     raise
                 if attempt == 0:
-                    time.sleep(1.5)
+                    _sleep_before_retry(attempt)
     raise RuntimeError("All configured Gemini models failed. " + " | ".join(errors))
 
 
 def _upload_with_retry(c, path: Path):
     last_error = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             return c.files.upload(file=str(path), config={"mime_type": "application/pdf"})
         except Exception as exc:
             last_error = exc
-            if not _is_retryable(exc) or attempt == 2:
+            if not _is_retryable(exc) or attempt == 3:
                 raise
-            time.sleep(1.5 * (attempt + 1))
+            _sleep_before_retry(attempt)
     raise last_error or RuntimeError("Gemini PDF upload failed")
 
 
