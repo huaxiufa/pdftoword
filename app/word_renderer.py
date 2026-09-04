@@ -2,6 +2,7 @@ from pathlib import Path
 from copy import deepcopy
 
 import fitz
+from PIL import Image
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
@@ -229,6 +230,26 @@ def _extract_images(page, work_dir):
                 path = Path(work_dir) / f"p{page.number + 1}_img{xref}.{ext}"
                 path.write_bytes(data["image"])
             for rect in page.get_image_rects(xref):
+                # Word/LibreOffice may shift an anchored image that extends outside
+                # the page. Crop only the out-of-page part so the remaining visible
+                # pixels can be anchored exactly at the PDF page boundary.
+                clipped = rect & page.rect
+                if clipped.is_empty:
+                    continue
+                if clipped != rect:
+                    src = Image.open(path).convert("RGBA")
+                    sx = src.width / rect.width
+                    sy = src.height / rect.height
+                    box = (
+                        max(0, round((clipped.x0 - rect.x0) * sx)),
+                        max(0, round((clipped.y0 - rect.y0) * sy)),
+                        min(src.width, round((clipped.x1 - rect.x0) * sx)),
+                        min(src.height, round((clipped.y1 - rect.y0) * sy)),
+                    )
+                    cropped_path = Path(work_dir) / f"p{page.number + 1}_img{xref}_{len(result)}.png"
+                    src.crop(box).save(cropped_path, "PNG")
+                    path = cropped_path
+                    rect = clipped
                 key = (xref, round(rect.x0, 3), round(rect.y0, 3), round(rect.x1, 3), round(rect.y1, 3))
                 if key not in seen:
                     result.append({"path": path, "rect": rect, "xref": xref})
