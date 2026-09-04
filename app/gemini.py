@@ -42,7 +42,6 @@ def _is_retryable(exc: Exception) -> bool:
 
 
 def _model_candidates():
-    """Configured models in priority order. GEMINI_MODELS can override defaults."""
     configured = os.getenv("GEMINI_MODELS", "")
     if configured.strip():
         raw = [x.strip() for x in configured.split(",") if x.strip()]
@@ -59,19 +58,12 @@ def _generate_with_fallback(c, uploaded, prompt):
     models = _model_candidates()
     if not models:
         raise RuntimeError("No Gemini models configured")
-
     errors = []
-    for model_index, model in enumerate(models):
+    for model in models:
         for attempt in range(2):
             try:
-                print(
-                    f"Gemini PDF conversion: model={model} attempt={attempt + 1}/2",
-                    flush=True,
-                )
-                response = c.models.generate_content(
-                    model=model,
-                    contents=[uploaded, prompt],
-                )
+                print(f"Gemini PDF conversion: model={model} attempt={attempt + 1}/2", flush=True)
+                response = c.models.generate_content(model=model, contents=[uploaded, prompt])
                 text = response.text or ""
                 if not text.strip():
                     raise RuntimeError(f"Gemini model {model} returned an empty response")
@@ -81,15 +73,12 @@ def _generate_with_fallback(c, uploaded, prompt):
                 status = _status_code(exc)
                 errors.append(f"{model}: {status or type(exc).__name__}: {exc}")
                 print(f"Gemini model failed: model={model} status={status} error={exc}", flush=True)
-
-                # 404/400/401/403 are not transient: do not waste time retrying.
                 if status in {400, 401, 403, 404}:
                     break
                 if not _is_retryable(exc):
                     raise
                 if attempt == 0:
                     time.sleep(1.5)
-
     raise RuntimeError("All configured Gemini models failed. " + " | ".join(errors))
 
 
@@ -97,10 +86,7 @@ def _upload_with_retry(c, path: Path):
     last_error = None
     for attempt in range(3):
         try:
-            return c.files.upload(
-                file=str(path),
-                config={"mime_type": "application/pdf"},
-            )
+            return c.files.upload(file=str(path), config={"mime_type": "application/pdf"})
         except Exception as exc:
             last_error = exc
             if not _is_retryable(exc) or attempt == 2:
@@ -123,35 +109,56 @@ def pdf_to_structured(path: Path, prompt: str):
 
 def pdf_layout_analysis(path: Path):
     prompt = r'''
-You are the layout reconstruction engine for a PDF-to-Word converter.
-Inspect the uploaded PDF visually, including text, photos, logos, tables, lines,
-columns, spacing and page structure. Do NOT summarize the document.
-Return ONLY valid JSON with this schema:
+You are a document reconstruction engine for PDF-to-Word.
+Inspect the uploaded PDF visually. Reconstruct the document, do not summarize it.
+Preserve the exact reading order, visible text, tables, photos, logos, lines, headings,
+columns, spacing and page structure as closely as possible.
+
+Return ONLY valid JSON using exactly this general schema:
 {
   "pages": [
     {
       "page": 1,
-      "width_ratio": 1,
-      "height_ratio": 1,
-      "background": "white|other",
       "columns": [
         {
           "x": 0, "y": 0, "w": 1, "h": 1,
           "elements": [
-            {"type":"text|image|table|line|shape", "x":0, "y":0, "w":1, "h":1,
-             "text":"", "font_size":11, "bold":false, "italic":false,
-             "align":"left|center|right", "image_index":0,
-             "rows":[["cell"]]}
+            {"type":"text|image|table|line", "x":0, "y":0, "w":1, "h":0.03,
+             "text":"", "font_size":11, "font_family":"Arial", "bold":false,
+             "italic":false, "underline":false, "color":"000000", "align":"left"},
+            {"type":"image", "x":0, "y":0, "w":0.2, "h":0.2, "image_index":0},
+            {"type":"table", "x":0, "y":0, "w":1, "h":0.2,
+             "font_size":9,
+             "cells":[
+               {"row":0,"col":0,"row_span":1,"col_span":1,"text":"cell"}
+             ]}
           ]
         }
       ]
     }
   ]
 }
-Coordinates must be normalized 0..1 relative to each page. Preserve reading order.
-For tables, preserve every visible cell and row. For images, identify their position
-and set image_index in top-to-bottom, left-to-right order on that page.
-Do not omit decorative lines/shapes that materially affect the layout.
+
+IMPORTANT TABLE RULES:
+- For every table, use "cells" rather than "rows" whenever possible.
+- Number rows and columns from zero.
+- Read cells strictly left-to-right within each row and top-to-bottom by row.
+- Preserve every visible cell exactly; do not reorder, merge, split, summarize or invent values.
+- Use row_span/col_span only when the PDF visibly contains a merged cell.
+- For the language-skills table, preserve the five language-rating columns and the
+  two header rows exactly, including UNDERSTANDING, SPEAKING, WRITING, Listening,
+  Reading, Spoken production and Spoken interaction.
+
+IMPORTANT IMAGE RULES:
+- image_index is the visual order of embedded images on that page, top-to-bottom then left-to-right.
+- Give the image's actual visible bounding box as normalized x/y/w/h as accurately as possible.
+- Do not treat text as an image and never use a screenshot of a whole page as an image.
+- If an image is a portrait/photo, keep its aspect ratio.
+
+Coordinates are normalized 0..1 relative to the page. Keep columns in left-to-right order.
+Keep elements in visual reading order. The output will be rendered as editable Word text,
+native Word tables and separate original PDF images, so accuracy of coordinates and table
+cell ordering is critical.
 '''
     raw = pdf_to_structured(path, prompt)
     match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.S)
