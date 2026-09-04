@@ -1,18 +1,19 @@
 import io
 import json
 import re
-import tempfile
 from pathlib import Path
 
 import fitz
 from docx import Document
 from docx.enum.section import WD_SECTION
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
+from lxml import etree
 from openpyxl import Workbook
 from PIL import Image
+
+VML_NS = "urn:schemas-microsoft-com:vml"
 
 
 def merge_pdfs(paths, output):
@@ -114,23 +115,14 @@ def _hex_color(value, default="000000"):
     return default
 
 
-def _add_run_format(run, element):
-    run.bold = bool(element.get("bold", False))
-    run.italic = bool(element.get("italic", False))
-    if element.get("underline"):
-        run.underline = True
-    font = run.font
-    font.name = element.get("font", "Arial") or "Arial"
-    size = element.get("font_size", 10.5)
-    try:
-        font.size = Pt(float(size))
-    except (TypeError, ValueError):
-        font.size = Pt(10.5)
-    font.color.rgb = RGBColor.from_string(_hex_color(element.get("color", "000000")))
-
-
 def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
-    """Add an editable, absolutely positioned Word text box."""
+    """Add an editable, absolutely positioned Word text box.
+
+    VML elements are created with an explicit namespace because python-docx does
+    not register the VML ``v`` prefix in its OxmlElement resolver. The old
+    OxmlElement("v:shape") path raised KeyError('v') and caused PDF-to-Word to
+    return 502 before a DOCX could be written.
+    """
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(0)
@@ -139,7 +131,7 @@ def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
 
     run = p.add_run()
     pict = OxmlElement("w:pict")
-    shape = OxmlElement("v:shape")
+    shape = etree.Element(f"{{{VML_NS}}}shape")
     shape.set(qn("id"), f"GeminiText_{id(element)}")
     shape.set(qn("type"), "#_x0000_t202")
     shape.set(qn("style"),
@@ -150,7 +142,7 @@ def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
               "mso-position-vertical-relative:page")
     shape.set(qn("fillcolor"), "white")
     shape.set(qn("stroked"), "f")
-    textbox = OxmlElement("v:textbox")
+    textbox = etree.SubElement(shape, f"{{{VML_NS}}}textbox")
     textbox.set(qn("inset"), "0pt,0pt,0pt,0pt")
     txbx = OxmlElement("w:txbxContent")
     wp = OxmlElement("w:p")
@@ -177,11 +169,9 @@ def _add_textbox(doc, left_pt, top_pt, width_pt, height_pt, element):
 
 
 def _add_floating_picture(doc, image_path, left_pt, top_pt, width_pt, height_pt):
-    """Insert an image as a floating Word drawing without relying on python-docx's
-    non-existent CT_Inline.cNvGraphicFramePr property.
+    """Insert an original PDF image as a floating Word picture.
 
-    The image remains an independent editable/movable Word picture; the PDF page is
-    never converted to a screenshot.
+    The PDF page is never rasterized as a screenshot.
     """
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
@@ -190,9 +180,6 @@ def _add_floating_picture(doc, image_path, left_pt, top_pt, width_pt, height_pt)
     inline = run.add_picture(str(image_path), width=Pt(max(width_pt, 1)))
     inline_xml = inline._inline
 
-    # CT_Inline exposes its XML children, but python-docx does not provide a
-    # cNvGraphicFramePr attribute. Move the existing DrawingML nodes into an
-    # anchor instead of accessing a non-existent attribute.
     doc_pr = inline_xml.find(qn("wp:docPr"))
     c_nv = inline_xml.find(qn("wp:cNvGraphicFramePr"))
     graphic = inline_xml.find(qn("a:graphic"))
@@ -201,41 +188,27 @@ def _add_floating_picture(doc, image_path, left_pt, top_pt, width_pt, height_pt)
         return p
 
     anchor = OxmlElement("wp:anchor")
-    anchor.set("distT", "0")
-    anchor.set("distB", "0")
-    anchor.set("distL", "0")
-    anchor.set("distR", "0")
-    anchor.set("simplePos", "0")
-    anchor.set("relativeHeight", "251658240")
-    anchor.set("behindDoc", "0")
-    anchor.set("locked", "0")
-    anchor.set("layoutInCell", "1")
-    anchor.set("allowOverlap", "1")
+    anchor.set("distT", "0"); anchor.set("distB", "0")
+    anchor.set("distL", "0"); anchor.set("distR", "0")
+    anchor.set("simplePos", "0"); anchor.set("relativeHeight", "251658240")
+    anchor.set("behindDoc", "0"); anchor.set("locked", "0")
+    anchor.set("layoutInCell", "1"); anchor.set("allowOverlap", "1")
 
     simple = OxmlElement("wp:simplePos")
-    simple.set("x", "0")
-    simple.set("y", "0")
-    anchor.append(simple)
+    simple.set("x", "0"); simple.set("y", "0"); anchor.append(simple)
 
     pos_h = OxmlElement("wp:positionH")
     pos_h.set("relativeFrom", "page")
-    off_h = OxmlElement("wp:posOffset")
-    off_h.text = str(int(left_pt * 12700))
-    pos_h.append(off_h)
-    anchor.append(pos_h)
+    off_h = OxmlElement("wp:posOffset"); off_h.text = str(int(left_pt * 12700))
+    pos_h.append(off_h); anchor.append(pos_h)
 
     pos_v = OxmlElement("wp:positionV")
     pos_v.set("relativeFrom", "page")
-    off_v = OxmlElement("wp:posOffset")
-    off_v.text = str(int(top_pt * 12700))
-    pos_v.append(off_v)
-    anchor.append(pos_v)
+    off_v = OxmlElement("wp:posOffset"); off_v.text = str(int(top_pt * 12700))
+    pos_v.append(off_v); anchor.append(pos_v)
 
     anchor.append(extent)
-
-    wrap = OxmlElement("wp:wrapNone")
-    anchor.append(wrap)
-
+    anchor.append(OxmlElement("wp:wrapNone"))
     anchor.append(doc_pr)
     if c_nv is not None:
         anchor.append(c_nv)
@@ -268,31 +241,34 @@ def _render_table(doc, page, element, page_width, page_height):
     rows = element.get("rows") or []
     if not rows:
         return
-    max_cols = max(len(r) for r in rows)
+    max_cols = max((len(r) for r in rows if isinstance(r, list)), default=0)
     if max_cols == 0:
         return
     table = doc.add_table(rows=len(rows), cols=max_cols)
     table.style = "Table Grid"
-    x = float(element.get("x", 0)) * page_width
-    y = float(element.get("y", 0)) * page_height
-    w = float(element.get("w", 1)) * page_width
+    y = float(element.get("y", 0) or 0) * page_height
+    w = float(element.get("w", 1) or 1) * page_width
     try:
         for r, row in enumerate(rows):
+            if not isinstance(row, list):
+                row = [str(row)]
             for c in range(max_cols):
                 value = row[c] if c < len(row) else ""
                 cell = table.cell(r, c)
                 cell.text = "" if value is None else str(value)
                 for p in cell.paragraphs:
-                    p.paragraph_format.space_before = Pt(0); p.paragraph_format.space_after = Pt(0)
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(0)
                     if element.get("font_size"):
-                        for run in p.runs: run.font.size = Pt(float(element["font_size"]))
+                        for run in p.runs:
+                            run.font.size = Pt(float(element["font_size"]))
         if w > 0:
             table.autofit = False
             col_width = Inches(w / 72 / max_cols)
             for row in table.rows:
                 for cell in row.cells:
                     cell.width = col_width
-    except Exception:
+    except (TypeError, ValueError):
         pass
     spacer = doc.add_paragraph()
     spacer.paragraph_format.space_before = Pt(max(0, y))
@@ -302,14 +278,14 @@ def _render_table(doc, page, element, page_width, page_height):
 def gemini_layout_to_docx(source_pdf, layout, output):
     """Build an editable DOCX from Gemini's visual layout description.
 
-    Gemini is responsible for understanding the PDF. We only use PyMuPDF to fetch
-    original embedded image assets and page dimensions; the page itself is never
-    inserted as a screenshot. Text is native editable Word text, tables are native
-    Word tables, and embedded images remain images.
+    Gemini understands the PDF. PyMuPDF is used only for page geometry and original
+    embedded image extraction. Whole PDF pages are never converted to images.
     """
     source_pdf = Path(source_pdf)
     output = Path(output)
     pages = layout.get("pages", []) if isinstance(layout, dict) else []
+    if not isinstance(pages, list):
+        pages = []
     pdf = fitz.open(source_pdf)
     doc = Document()
     try:
@@ -321,24 +297,34 @@ def gemini_layout_to_docx(source_pdf, layout, output):
             section = doc.sections[-1]
             width_pt, height_pt = page.rect.width, page.rect.height
             _set_page_size(section, width_pt, height_pt)
-            gem_page = pages[index] if index < len(pages) else {}
+            gem_page = pages[index] if index < len(pages) and isinstance(pages[index], dict) else {}
             image_items = _extract_page_images(page, output.parent)
-            columns = gem_page.get("columns", []) if isinstance(gem_page, dict) else []
+            columns = gem_page.get("columns", [])
             elements = []
-            for col in columns:
-                elements.extend(col.get("elements", []) or [])
-            elements.extend(gem_page.get("elements", []) or [])
-            elements.sort(key=lambda e: (float(e.get("y", 0)), float(e.get("x", 0))))
+            if isinstance(columns, list):
+                for col in columns:
+                    if isinstance(col, dict) and isinstance(col.get("elements"), list):
+                        elements.extend(e for e in col["elements"] if isinstance(e, dict))
+            page_elements = gem_page.get("elements", [])
+            if isinstance(page_elements, list):
+                elements.extend(e for e in page_elements if isinstance(e, dict))
+            elements.sort(key=lambda e: (
+                float(e.get("y", 0) or 0),
+                float(e.get("x", 0) or 0),
+            ))
             for element in elements:
-                kind = element.get("type", "text")
-                x = float(element.get("x", 0)) * width_pt
-                y = float(element.get("y", 0)) * height_pt
-                w = float(element.get("w", 0.9)) * width_pt
-                h = float(element.get("h", 0.04)) * height_pt
-                if kind == "text" and str(element.get("text", "")).strip():
+                kind = str(element.get("type", "text") or "text").lower()
+                x = float(element.get("x", 0) or 0) * width_pt
+                y = float(element.get("y", 0) or 0) * height_pt
+                w = float(element.get("w", 0.9) or 0.9) * width_pt
+                h = float(element.get("h", 0.04) or 0.04) * height_pt
+                if kind == "text" and str(element.get("text", "") or "").strip():
                     _add_textbox(doc, x, y, w, h, element)
                 elif kind == "image":
-                    idx = int(element.get("image_index", 0) or 0)
+                    try:
+                        idx = int(element.get("image_index", 0) or 0)
+                    except (TypeError, ValueError):
+                        idx = 0
                     matches = [item for item in image_items if item[0] == idx]
                     if matches:
                         _, image_path, _ = matches[0]
@@ -346,9 +332,17 @@ def gemini_layout_to_docx(source_pdf, layout, output):
                 elif kind == "table":
                     _render_table(doc, page, element, width_pt, height_pt)
                 elif kind == "line":
-                    p = doc.add_paragraph(); p.paragraph_format.space_before = Pt(y); p.paragraph_format.space_after = Pt(0)
-                    pPr = p._p.get_or_add_pPr(); borders = OxmlElement("w:pBdr"); bottom = OxmlElement("w:bottom")
-                    bottom.set(qn("w:val"), "single"); bottom.set(qn("w:sz"), "6"); bottom.set(qn("w:space"), "0"); bottom.set(qn("w:color"), _hex_color(element.get("color", "808080"))); borders.append(bottom); pPr.append(borders)
+                    p = doc.add_paragraph()
+                    p.paragraph_format.space_before = Pt(y)
+                    p.paragraph_format.space_after = Pt(0)
+                    pPr = p._p.get_or_add_pPr()
+                    borders = OxmlElement("w:pBdr")
+                    bottom = OxmlElement("w:bottom")
+                    bottom.set(qn("w:val"), "single")
+                    bottom.set(qn("w:sz"), "6")
+                    bottom.set(qn("w:space"), "0")
+                    bottom.set(qn("w:color"), _hex_color(element.get("color", "808080")))
+                    borders.append(bottom); pPr.append(borders)
         doc.save(output)
     finally:
         pdf.close()
