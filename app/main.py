@@ -22,7 +22,12 @@ TOOLS = {"merge","split","extract","rotate","compress","pdf-to-word","pdf-to-exc
 
 @app.get("/health")
 def health():
-    return {"status":"ok", "gemini": bool(os.getenv("GEMINI_API_KEY")), "model": os.getenv("GEMINI_MODEL", "gemini-3.7-flash")}
+    return {
+        "status":"ok",
+        "gemini": bool(os.getenv("GEMINI_API_KEY")),
+        "model": os.getenv("GEMINI_MODEL", "gemini-3.7-flash"),
+        "fallback_model": os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash"),
+    }
 
 @app.post("/api/v1/tools/{tool}")
 async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", angle: int = 90):
@@ -59,8 +64,6 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
         elif tool == "images-to-pdf":
             out=OUTPUT/f"{task}.pdf"; images_to_pdf(saved,out)
         elif tool == "pdf-to-word":
-            # Gemini is the semantic/visual layout engine. PyMuPDF is used only
-            # by the renderer for page geometry/raster fidelity, not PDF parsing.
             try:
                 layout = pdf_layout_analysis(saved[0])
             except json.JSONDecodeError as exc:
@@ -81,7 +84,12 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
     except Exception as exc:
         print(f"Tool {tool} failed: {type(exc).__name__}: {exc}", flush=True)
         if tool in {"pdf-to-word", "pdf-to-excel"}:
-            raise HTTPException(502, f"Document conversion failed: {str(exc)}") from exc
+            message = str(exc)
+            # Preserve upstream Gemini status information instead of masking a
+            # provider outage as a generic conversion failure.
+            if "503" in message or "UNAVAILABLE" in message or "429" in message:
+                raise HTTPException(503, f"Gemini temporarily unavailable. Please retry shortly. Details: {message}") from exc
+            raise HTTPException(502, f"Document conversion failed: {message}") from exc
         raise HTTPException(500, f"Processing failed: {str(exc)}") from exc
     finally:
         shutil.rmtree(work, ignore_errors=True)
