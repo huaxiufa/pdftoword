@@ -216,10 +216,18 @@ def _extract_images(page, work_dir):
     for info in page.get_images(full=True):
         try:
             xref = info[0]
-            data = page.parent.extract_image(xref)
-            ext = data.get("ext", "png")
-            path = Path(work_dir) / f"p{page.number + 1}_img{xref}.{ext}"
-            path.write_bytes(data["image"])
+            smask = info[1] if len(info) > 1 else 0
+            if smask:
+                base = fitz.Pixmap(page.parent, xref)
+                mask = fitz.Pixmap(page.parent, smask)
+                pix = fitz.Pixmap(base, mask)
+                path = Path(work_dir) / f"p{page.number + 1}_img{xref}.png"
+                pix.save(str(path))
+            else:
+                data = page.parent.extract_image(xref)
+                ext = data.get("ext", "png")
+                path = Path(work_dir) / f"p{page.number + 1}_img{xref}.{ext}"
+                path.write_bytes(data["image"])
             for rect in page.get_image_rects(xref):
                 key = (xref, round(rect.x0, 3), round(rect.y0, 3), round(rect.x1, 3), round(rect.y1, 3))
                 if key not in seen:
@@ -350,52 +358,36 @@ def render_editable_pdf(source_pdf, layout, output):
     source_pdf = Path(source_pdf)
     output = Path(output)
     pages = layout.get("pages", []) if isinstance(layout, dict) else []
-    if not isinstance(pages, list):
-        pages = []
-    pdf = fitz.open(source_pdf)
     doc = Document()
-    work_dir = output.parent / f".pdf-images-{output.stem}"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    try:
+    first = True
+    with fitz.open(source_pdf) as pdf:
         for page_index, page in enumerate(pdf):
-            if page_index:
+            if not first:
                 doc.add_section(WD_SECTION.NEW_PAGE)
+            first = False
             section = doc.sections[-1]
-            section.page_width = Pt(page.rect.width)
-            section.page_height = Pt(page.rect.height)
-            section.top_margin = Pt(0)
-            section.bottom_margin = Pt(0)
-            section.left_margin = Pt(0)
-            section.right_margin = Pt(0)
-            section.header_distance = Pt(0)
-            section.footer_distance = Pt(0)
+            section.page_width = Inches(page.rect.width / 72.0)
+            section.page_height = Inches(page.rect.height / 72.0)
+            section.top_margin = Inches(0)
+            section.bottom_margin = Inches(0)
+            section.left_margin = Inches(0)
+            section.right_margin = Inches(0)
 
-            gem_page = pages[page_index] if page_index < len(pages) and isinstance(pages[page_index], dict) else {}
+            table = doc.add_table(rows=1, cols=1)
+            table.autofit = False
+            table.allow_autofit = False
+            table.width = Inches(page.rect.width / 72.0)
+            cell = table.cell(0, 0)
+            cell.width = Inches(page.rect.width / 72.0)
+            _remove_cell_margins(cell)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+
+            page_layout = pages[page_index] if page_index < len(pages) and isinstance(pages[page_index], dict) else {}
+            elements = _page_elements(page_layout)
+            work_dir = output.parent / f".pdf_images_{page_index + 1}"
+            work_dir.mkdir(parents=True, exist_ok=True)
             image_map = _extract_images(page, work_dir)
-            columns = _column_elements(gem_page)
-            visible_columns = [c for c in columns if c["elements"]] or columns[:1]
+            _render_column(cell, elements, image_map, page.rect)
 
-            layout_table = doc.add_table(rows=1, cols=len(visible_columns))
-            _remove_table_borders(layout_table)
-            _set_table_layout(layout_table, page.rect.width)
-            total_w = page.rect.width
-            total_detected = sum(c["w"] for c in visible_columns) or 1.0
-            for i, col in enumerate(visible_columns):
-                cell = layout_table.cell(0, i)
-                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-                _remove_cell_margins(cell)
-                width = max(18.0, (col["w"] / total_detected) * total_w)
-                cell.width = Inches(width / 72.0)
-                _render_column(cell, col["elements"], image_map, page.rect)
-        doc.save(output)
-    finally:
-        pdf.close()
-        for p in work_dir.glob("*"):
-            try:
-                p.unlink()
-            except Exception:
-                pass
-        try:
-            work_dir.rmdir()
-        except Exception:
-            pass
+    output.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output)
