@@ -11,8 +11,9 @@ from fastapi.staticfiles import StaticFiles
 from app.gemini import pdf_layout_analysis, pdf_to_structured
 from app.pdf_tools import (
     extract_pages, images_to_pdf, merge_pdfs, pdf_to_images, rotate_pdf,
-    split_pdf, compress_pdf, gemini_layout_to_docx, structured_to_xlsx,
+    split_pdf, compress_pdf, structured_to_xlsx,
 )
+from app.word_renderer import render_editable_pdf
 
 BASE = Path(os.getenv("DATA_DIR", "/app/data")); OUTPUT = BASE / "output"
 UPLOADS = BASE / "uploads"; OUTPUT.mkdir(parents=True, exist_ok=True); UPLOADS.mkdir(parents=True, exist_ok=True)
@@ -68,7 +69,8 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
                 layout = pdf_layout_analysis(saved[0])
             except json.JSONDecodeError as exc:
                 raise HTTPException(502, f"Gemini returned invalid layout JSON: {exc.msg}") from exc
-            out=OUTPUT/f"{task}.docx"; gemini_layout_to_docx(saved[0],layout,out)
+            out=OUTPUT/f"{task}.docx"
+            render_editable_pdf(saved[0], layout, out)
         elif tool == "pdf-to-excel":
             prompt='''Extract all tables from this PDF. Return ONLY valid JSON: {"rows":[["cell1","cell2"]]}. Include column headers when present. Preserve values exactly; if there are multiple tables, append them separated by a blank row. Do not invent data.'''
             raw=pdf_to_structured(saved[0],prompt).strip(); cleaned=raw.removeprefix("```json").removesuffix("```").strip()
@@ -85,8 +87,6 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
         print(f"Tool {tool} failed: {type(exc).__name__}: {exc}", flush=True)
         if tool in {"pdf-to-word", "pdf-to-excel"}:
             message = str(exc)
-            # Preserve upstream Gemini status information instead of masking a
-            # provider outage as a generic conversion failure.
             if "503" in message or "UNAVAILABLE" in message or "429" in message:
                 raise HTTPException(503, f"Gemini temporarily unavailable. Please retry shortly. Details: {message}") from exc
             raise HTTPException(502, f"Document conversion failed: {message}") from exc
