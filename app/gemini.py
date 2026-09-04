@@ -22,21 +22,54 @@ def client():
 
 
 def _status_code(exc: Exception):
-    return getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    """Extract an HTTP/API status code across google-genai exception variants."""
+    for value in (
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            match = re.search(r"\b(429|500|502|503|504)\b", value)
+            if match:
+                return int(match.group(1))
+
+    match = re.search(r"\b(429|500|502|503|504)\b", str(exc))
+    return int(match.group(1)) if match else None
 
 
 def _is_retryable(exc: Exception) -> bool:
     return _status_code(exc) in {429, 500, 502, 503, 504}
 
 
-def _generate_with_fallback(c, uploaded, prompt):
-    models = [MODEL]
-    if FALLBACK_MODEL and FALLBACK_MODEL != MODEL:
-        models.append(FALLBACK_MODEL)
+def _model_candidates():
+    """Return configured models in priority order, without duplicates."""
+    configured = os.getenv("GEMINI_MODELS", "")
+    values = [item.strip() for item in configured.split(",") if item.strip()]
+    if not values:
+        values = [MODEL, FALLBACK_MODEL]
+    elif MODEL:
+        values.insert(0, MODEL)
+        if FALLBACK_MODEL:
+            values.append(FALLBACK_MODEL)
 
+    result = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _generate_with_fallback(c, uploaded, prompt):
+    models = _model_candidates()
     last_error = None
+
     for model_index, model in enumerate(models):
-        for attempt in range(4):
+        # A busy Gemini model should not block the conversion for a long time.
+        # Two quick retries are enough before moving to the next configured model.
+        max_attempts = 2
+        for attempt in range(max_attempts):
             try:
                 response = c.models.generate_content(
                     model=model,
@@ -52,21 +85,36 @@ def _generate_with_fallback(c, uploaded, prompt):
                 if not _is_retryable(exc):
                     raise
 
-                # 503 means the selected model is temporarily overloaded. Retry
-                # briefly, then switch to the stable fallback model instead of
-                # making the user wait through repeated failures on one model.
-                if status == 503 and model_index < len(models) - 1 and attempt >= 1:
+                # 503 = temporary model overload. Switch immediately after one
+                # short retry instead of waiting through repeated failures.
+                # Other transient errors get the same bounded retry policy.
+                if attempt + 1 < max_attempts:
+                    time.sleep(1.5 * (attempt + 1))
+                elif model_index + 1 < len(models):
                     break
-                if attempt == 3:
-                    break
-                time.sleep(min(2 ** attempt, 8))
 
     raise last_error or RuntimeError("Gemini request failed")
 
 
+def _upload_with_retry(c, path: Path):
+    last_error = None
+    for attempt in range(3):
+        try:
+            return c.files.upload(
+                file=str(path),
+                config={"mime_type": "application/pdf"},
+            )
+        except Exception as exc:
+            last_error = exc
+            if not _is_retryable(exc) or attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    raise last_error or RuntimeError("Gemini PDF upload failed")
+
+
 def pdf_to_structured(path: Path, prompt: str):
     c = client()
-    uploaded = c.files.upload(file=str(path), config={"mime_type": "application/pdf"})
+    uploaded = _upload_with_retry(c, path)
     try:
         return _generate_with_fallback(c, uploaded, prompt)
     finally:
