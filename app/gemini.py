@@ -7,7 +7,7 @@ from pathlib import Path
 from google import genai
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
-FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
 _client = None
 
 
