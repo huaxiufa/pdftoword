@@ -5,8 +5,7 @@ from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt
-from PIL import Image
+from docx.shared import Inches, Pt
 
 
 def _safe_float(value, default=0.0):
@@ -83,10 +82,7 @@ def _add_table(cell, element):
         return
     clean_rows = []
     for row in rows:
-        if isinstance(row, list):
-            clean_rows.append(row)
-        else:
-            clean_rows.append([row])
+        clean_rows.append(row if isinstance(row, list) else [row])
     cols = max((len(r) for r in clean_rows), default=0)
     if not cols:
         return
@@ -108,6 +104,12 @@ def _add_table(cell, element):
 
 
 def _extract_images(page, work_dir):
+    """Extract page images and retain their real PDF bounding boxes.
+
+    Gemini's image_index follows the PDF's top-to-bottom, left-to-right image
+    order. Keeping the actual bbox lets the renderer correct Gemini's occasional
+    size estimate errors while still using Gemini for semantic/layout decisions.
+    """
     result = []
     for idx, info in enumerate(page.get_images(full=True)):
         try:
@@ -116,28 +118,67 @@ def _extract_images(page, work_dir):
             ext = data.get("ext", "png")
             path = Path(work_dir) / f"p{page.number + 1}_img{idx}.{ext}"
             path.write_bytes(data["image"])
-            result.append((idx, path))
+            rects = page.get_image_rects(xref)
+            rect = rects[0] if rects else None
+            result.append((idx, path, rect))
         except Exception:
             continue
-    return result
+    # Match the prompt's visual order rather than PyMuPDF object order.
+    result.sort(key=lambda item: (
+        item[2].y0 if item[2] is not None else 10**9,
+        item[2].x0 if item[2] is not None else 10**9,
+    ))
+    return {order: (path, rect) for order, (_, path, rect) in enumerate(result)}
 
 
-def _add_image(cell, image_path, element, page_width_pt):
+def _add_image(cell, image_info, element, page_rect):
+    image_path, actual_rect = image_info
     p = cell.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(3)
+
+    # Gemini supplies normalized coordinates; use them for horizontal placement
+    # and vertical spacing. This is intentionally a flow-based placement so the
+    # resulting DOCX remains editable and stable across Word versions.
+    x = _safe_float(element.get("x"), 0.0)
+    y = _safe_float(element.get("y"), 0.0)
+    w = _safe_float(element.get("w"), 0.0)
+
+    if actual_rect is not None:
+        actual_w = max(1.0, actual_rect.width / page_rect.width)
+        actual_h = max(1.0, actual_rect.height / page_rect.height)
+        # Prefer the real PDF image width when Gemini's estimate is obviously off.
+        if w <= 0 or abs(w - actual_w) > 0.08:
+            w = actual_w
+        # If Gemini has no usable vertical coordinate, use the PDF bbox.
+        if y <= 0:
+            y = max(0.0, actual_rect.y0 / page_rect.height)
+        if x <= 0:
+            x = max(0.0, actual_rect.x0 / page_rect.width)
+    else:
+        actual_h = 0.0
+
+    w = min(max(w or 0.25, 0.03), 0.95)
+    page_width = max(1.0, page_rect.width)
+    left_pt = max(0.0, min(x * page_width, page_width * 0.85))
+    if left_pt:
+        p.paragraph_format.left_indent = Pt(left_pt)
+
+    # Keep a small amount of the PDF's vertical position in the flow. Do not add
+    # huge blank areas: Word's normal paragraph flow should remain usable.
+    if y > 0:
+        p.paragraph_format.space_before = Pt(min(y * page_rect.height, 48))
+
     align = str(element.get("align") or "left").lower()
     p.alignment = {"center": WD_ALIGN_PARAGRAPH.CENTER, "right": WD_ALIGN_PARAGRAPH.RIGHT}.get(align, WD_ALIGN_PARAGRAPH.LEFT)
-    width = _safe_float(element.get("w"), 0.25) * page_width_pt
-    width = min(max(width, 20), page_width_pt)
+
     try:
-        p.add_run().add_picture(str(image_path), width=Pt(width))
+        p.add_run().add_picture(str(image_path), width=Inches((w * page_width) / 72.0))
     except Exception:
         pass
 
 
-def _render_elements(cell, elements, image_map, page_width_pt):
-    # Remove the initial empty paragraph's visual impact, but keep it for DOCX validity.
+def _render_elements(cell, elements, image_map, page_rect):
     for element in elements:
         kind = str(element.get("type") or "text").lower()
         if kind in {"text", "heading", "paragraph", "bullet"}:
@@ -150,7 +191,7 @@ def _render_elements(cell, elements, image_map, page_width_pt):
         elif kind == "image":
             idx = int(_safe_float(element.get("image_index"), 0))
             if idx in image_map:
-                _add_image(cell, image_map[idx], element, page_width_pt)
+                _add_image(cell, image_map[idx], element, page_rect)
         elif kind == "line":
             p = cell.add_paragraph()
             p.paragraph_format.space_before = Pt(2)
@@ -163,8 +204,10 @@ def _render_elements(cell, elements, image_map, page_width_pt):
 def render_editable_pdf(source_pdf, layout, output):
     """Render Gemini's PDF understanding into an editable DOCX.
 
-    This renderer intentionally uses only high-level python-docx APIs. It never
-    creates VML text boxes or whole-page screenshots, avoiding fragile XML issues.
+    Text and tables stay native Word objects; PDF images are extracted as separate
+    images. Image dimensions and approximate placement are corrected from the
+    source PDF's real image bounding boxes rather than relying only on Gemini's
+    visual size estimate.
     """
     source_pdf = Path(source_pdf)
     output = Path(output)
@@ -188,11 +231,9 @@ def render_editable_pdf(source_pdf, layout, output):
             section.right_margin = Pt(24)
 
             gem_page = pages[page_index] if page_index < len(pages) and isinstance(pages[page_index], dict) else {}
-            image_map = dict(_extract_images(page, work_dir))
+            image_map = _extract_images(page, work_dir)
             columns = _column_elements(gem_page)
 
-            # A one-row table gives us a stable multi-column page structure while
-            # keeping every text node and table editable in Word.
             if len(columns) > 1:
                 layout_table = doc.add_table(rows=1, cols=len(columns))
                 layout_table.autofit = True
@@ -200,12 +241,11 @@ def render_editable_pdf(source_pdf, layout, output):
                     cell = layout_table.cell(0, col_index)
                     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
                     cell.text = ""
-                    _render_elements(cell, elements, image_map, page.rect.width)
+                    _render_elements(cell, elements, image_map, page.rect)
             else:
-                cell = doc.add_paragraph()._p.getparent()  # unused; kept out of rendering path
                 target = doc.add_table(rows=1, cols=1).cell(0, 0)
                 target.text = ""
-                _render_elements(target, columns[0], image_map, page.rect.width)
+                _render_elements(target, columns[0], image_map, page.rect)
         doc.save(output)
     finally:
         pdf.close()
