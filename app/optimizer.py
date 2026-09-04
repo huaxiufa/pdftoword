@@ -5,6 +5,8 @@ from app.compare import compare_pdf_and_docx
 from app.renderer import render_docx
 
 
+# Candidate grid intentionally favors density reductions because an extra output
+# page is much more damaging than a small amount of whitespace compression.
 DEFAULT_CANDIDATES = [
     (1.00, 1.00),
     (1.00, 0.97),
@@ -13,6 +15,11 @@ DEFAULT_CANDIDATES = [
     (0.96, 0.92),
     (0.94, 0.90),
     (0.92, 0.88),
+    (0.90, 0.86),
+    (0.88, 0.84),
+    (0.86, 0.82),
+    (0.84, 0.80),
+    (0.82, 0.78),
 ]
 
 
@@ -28,6 +35,8 @@ class LayoutOptimizer:
 
     @staticmethod
     def _rank(report):
+        # Page-count correctness is the hard constraint. Only compare visual
+        # quality after exact page count has been established.
         exact_pages = report["original_pages"] == report["output_pages"]
         return (1 if exact_pages else 0, report["overall_score"])
 
@@ -55,12 +64,12 @@ class LayoutOptimizer:
             if best is None or self._rank(report) > self._rank(best["report"]):
                 best = {"candidate": candidate_docx, "report": report, "parameters": item}
 
+            # Never stop on score stability while the page count is still wrong.
+            # The previous implementation could terminate after three similar
+            # 4-page candidates and never reach the denser candidates that fit
+            # the source's 3-page layout.
             if report["original_pages"] == report["output_pages"] and report["overall_score"] >= 0.985:
                 break
-            if len(history) >= 3:
-                recent = [x["overall_score"] for x in history[-3:]]
-                if max(recent) - min(recent) < 0.001:
-                    break
 
         history_path = self.work_dir / "optimization-history.json"
         history_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
