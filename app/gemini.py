@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 from google import genai
@@ -17,13 +18,41 @@ def client():
     return _client
 
 
+def _is_retryable(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    return status in {429, 500, 502, 503, 504}
+
+
 def pdf_to_structured(path: Path, prompt: str):
-    uploaded = client().files.upload(file=str(path), config={"mime_type": "application/pdf"})
+    """Upload a PDF to Gemini and return the model text.
+
+    Retry transient Gemini demand/rate-limit/server errors with exponential
+    backoff while reusing the same uploaded file.
+    """
+    c = client()
+    uploaded = c.files.upload(
+        file=str(path), config={"mime_type": "application/pdf"}
+    )
     try:
-        response = client().models.generate_content(model=MODEL, contents=[uploaded, prompt])
-        return response.text or ""
+        last_error = None
+        for attempt in range(4):
+            try:
+                response = c.models.generate_content(
+                    model=MODEL,
+                    contents=[uploaded, prompt],
+                )
+                text = response.text or ""
+                if not text.strip():
+                    raise RuntimeError("Gemini returned an empty response")
+                return text
+            except Exception as exc:
+                last_error = exc
+                if not _is_retryable(exc) or attempt == 3:
+                    raise
+                time.sleep(2 ** attempt)
+        raise last_error or RuntimeError("Gemini request failed")
     finally:
         try:
-            client().files.delete(name=uploaded.name)
+            c.files.delete(name=uploaded.name)
         except Exception:
             pass
