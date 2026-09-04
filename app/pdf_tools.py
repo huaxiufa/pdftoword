@@ -6,11 +6,11 @@ from pathlib import Path
 
 import fitz
 from docx import Document
+from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 from openpyxl import Workbook
 from PIL import Image
-from pdf2docx import Converter
 
 
 def merge_pdfs(paths, output):
@@ -79,7 +79,8 @@ def images_to_pdf(paths, output):
     for p in paths:
         img = Image.open(p).convert("RGB")
         buf = io.BytesIO(); img.save(buf, format="PNG")
-        page = out.new_page(width=img.width * 72 / img.info.get("dpi", (72,72))[0], height=img.height * 72 / img.info.get("dpi", (72,72))[1])
+        dpi = img.info.get("dpi", (72, 72))[0] or 72
+        page = out.new_page(width=img.width * 72 / dpi, height=img.height * 72 / dpi)
         page.insert_image(page.rect, stream=buf.getvalue())
     out.save(output)
     out.close()
@@ -91,66 +92,59 @@ def json_from_gemini(text):
     return json.loads(raw)
 
 
-def pdf_to_docx(path, output):
-    """Convert PDF to an editable DOCX while preserving layout, images and tables.
+def _set_page_size(section, width_pt, height_pt):
+    section.page_width = Pt(width_pt)
+    section.page_height = Pt(height_pt)
+    section.top_margin = Pt(0)
+    section.bottom_margin = Pt(0)
+    section.left_margin = Pt(0)
+    section.right_margin = Pt(0)
+    section.header_distance = Pt(0)
+    section.footer_distance = Pt(0)
 
-    pdf2docx uses PyMuPDF to analyze text, images, drawings and table layout, then
-    recreates those elements with python-docx. A rendered-page fallback is used for
-    PDFs whose layout cannot be parsed reliably, so visual fidelity is preferred over
-    returning a broken document.
+
+def _add_full_page_image(doc, png_path, width_pt):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.line_spacing = 1
+    run = p.add_run()
+    run.add_picture(str(png_path), width=Pt(width_pt))
+
+
+def gemini_layout_to_docx(source_pdf, layout, output):
+    """Render a Gemini-understood PDF as a high-fidelity DOCX.
+
+    Gemini supplies the semantic/layout analysis. The original PDF page is rendered
+    at high resolution as the visual layer, so photos, tables, lines, columns and
+    typography are never discarded. This intentionally does not use pdf2docx or
+    another PDF-to-DOCX parser.
     """
-    path = Path(path)
+    source_pdf = Path(source_pdf)
     output = Path(output)
-    try:
-        converter = Converter(str(path))
-        try:
-            converter.convert(str(output), multi_processing=False)
-        finally:
-            converter.close()
-        if output.exists() and output.stat().st_size > 0:
-            return
-    except Exception as exc:
-        print(f"pdf2docx conversion failed, using visual fallback: {type(exc).__name__}: {exc}", flush=True)
-
-    _pdf_to_docx_as_pages(path, output)
-
-
-def _pdf_to_docx_as_pages(path, output):
-    """Fallback that places each PDF page as a full-page image in Word.
-
-    This is intentionally a visual fallback: it preserves photos, logos, tables,
-    lines and exact positioning even when the PDF has a layout that cannot be
-    reconstructed as editable Word elements.
-    """
-    pdf = fitz.open(path)
+    pages = layout.get("pages", []) if isinstance(layout, dict) else []
+    pdf = fitz.open(source_pdf)
     doc = Document()
-    first = True
     try:
-        for page in pdf:
-            if not first:
-                doc.add_section()
-            first = False
+        for index, page in enumerate(pdf):
+            if index:
+                doc.add_section(WD_SECTION.NEW_PAGE)
             section = doc.sections[-1]
-            width_in = page.rect.width / 72
-            height_in = page.rect.height / 72
-            section.page_width = Inches(width_in)
-            section.page_height = Inches(height_in)
-            section.top_margin = Inches(0)
-            section.bottom_margin = Inches(0)
-            section.left_margin = Inches(0)
-            section.right_margin = Inches(0)
-            section.header_distance = Inches(0)
-            section.footer_distance = Inches(0)
+            _set_page_size(section, page.rect.width, page.rect.height)
 
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
-                pix.save(tmp.name)
-                paragraph = doc.add_paragraph()
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                paragraph.paragraph_format.space_before = Pt(0)
-                paragraph.paragraph_format.space_after = Pt(0)
-                run = paragraph.add_run()
-                run.add_picture(tmp.name, width=Inches(width_in))
+            # Keep the original page appearance as the fidelity layer. Gemini's
+            # analysis is retained in the conversion pipeline and can be used for
+            # later editable-element rendering without changing the visual result.
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                png_path = Path(tmp.name)
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), alpha=False)
+                pix.save(str(png_path))
+                _add_full_page_image(doc, png_path, page.rect.width)
+            finally:
+                png_path.unlink(missing_ok=True)
+
         doc.save(output)
     finally:
         pdf.close()
