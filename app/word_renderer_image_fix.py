@@ -52,6 +52,13 @@ def _extract_images(page, work_dir):
 
 
 def _add_floating_image(cell, image_info, element, page_rect):
+    """Create a page-relative anchor and move its carrier paragraph out of the table.
+
+    Word/LibreOffice applies cell-relative layout constraints to anchors whose
+    paragraph remains inside a table.  The PDF renderer, however, gives us
+    page-relative coordinates.  The carrier paragraph is therefore re-parented
+    directly under w:body before the anchor is finalized.
+    """
     actual = image_info['rect']
     path = image_info['path']
     width_pt = max(1.0, actual.width)
@@ -60,9 +67,25 @@ def _add_floating_image(cell, image_info, element, page_rect):
     p = cell.add_paragraph()
     p.paragraph_format.space_before = 0
     p.paragraph_format.space_after = 0
+    p.paragraph_format.line_spacing = 1
     run = p.add_run()
-    inline = run.add_picture(str(path), width=_wr.Inches(width_pt / 72), height=_wr.Inches(height_pt / 72))
+    inline = run.add_picture(
+        str(path),
+        width=_wr.Inches(width_pt / 72),
+        height=_wr.Inches(height_pt / 72),
+    )
     drawing = inline._inline
+
+    # Move the carrier paragraph from the table cell to the document body.
+    # This is the important difference from the previous patch: the anchor is
+    # no longer physically contained by the column table.
+    p_element = p._p
+    parent = p_element.getparent()
+    parent.remove(p_element)
+    body = cell._tc.getroottree().find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}body')
+    if body is None:
+        raise RuntimeError('Word document body not found for page image anchor')
+    body.append(p_element)
 
     anchor = OxmlElement('wp:anchor')
     for key, value in {
