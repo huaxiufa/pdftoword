@@ -22,7 +22,6 @@ def client():
 
 
 def _status_code(exc: Exception):
-    """Extract an HTTP/API status code across google-genai exception variants."""
     for value in (
         getattr(exc, "status_code", None),
         getattr(exc, "code", None),
@@ -31,31 +30,26 @@ def _status_code(exc: Exception):
         if isinstance(value, int):
             return value
         if isinstance(value, str):
-            match = re.search(r"\b(429|500|502|503|504)\b", value)
+            match = re.search(r"\b(400|401|403|404|408|409|429|500|502|503|504)\b", value)
             if match:
                 return int(match.group(1))
-
-    match = re.search(r"\b(429|500|502|503|504)\b", str(exc))
+    match = re.search(r"\b(400|401|403|404|408|409|429|500|502|503|504)\b", str(exc))
     return int(match.group(1)) if match else None
 
 
 def _is_retryable(exc: Exception) -> bool:
-    return _status_code(exc) in {429, 500, 502, 503, 504}
+    return _status_code(exc) in {408, 429, 500, 502, 503, 504}
 
 
 def _model_candidates():
-    """Return configured models in priority order, without duplicates."""
+    """Configured models in priority order. GEMINI_MODELS can override defaults."""
     configured = os.getenv("GEMINI_MODELS", "")
-    values = [item.strip() for item in configured.split(",") if item.strip()]
-    if not values:
-        values = [MODEL, FALLBACK_MODEL]
-    elif MODEL:
-        values.insert(0, MODEL)
-        if FALLBACK_MODEL:
-            values.append(FALLBACK_MODEL)
-
+    if configured.strip():
+        raw = [x.strip() for x in configured.split(",") if x.strip()]
+    else:
+        raw = [MODEL, FALLBACK_MODEL]
     result = []
-    for value in values:
+    for value in raw:
         if value and value not in result:
             result.append(value)
     return result
@@ -63,37 +57,40 @@ def _model_candidates():
 
 def _generate_with_fallback(c, uploaded, prompt):
     models = _model_candidates()
-    last_error = None
+    if not models:
+        raise RuntimeError("No Gemini models configured")
 
+    errors = []
     for model_index, model in enumerate(models):
-        # A busy Gemini model should not block the conversion for a long time.
-        # Two quick retries are enough before moving to the next configured model.
-        max_attempts = 2
-        for attempt in range(max_attempts):
+        for attempt in range(2):
             try:
+                print(
+                    f"Gemini PDF conversion: model={model} attempt={attempt + 1}/2",
+                    flush=True,
+                )
                 response = c.models.generate_content(
                     model=model,
                     contents=[uploaded, prompt],
                 )
                 text = response.text or ""
                 if not text.strip():
-                    raise RuntimeError("Gemini returned an empty response")
+                    raise RuntimeError(f"Gemini model {model} returned an empty response")
+                print(f"Gemini PDF conversion succeeded: model={model}", flush=True)
                 return text
             except Exception as exc:
-                last_error = exc
                 status = _status_code(exc)
+                errors.append(f"{model}: {status or type(exc).__name__}: {exc}")
+                print(f"Gemini model failed: model={model} status={status} error={exc}", flush=True)
+
+                # 404/400/401/403 are not transient: do not waste time retrying.
+                if status in {400, 401, 403, 404}:
+                    break
                 if not _is_retryable(exc):
                     raise
+                if attempt == 0:
+                    time.sleep(1.5)
 
-                # 503 = temporary model overload. Switch immediately after one
-                # short retry instead of waiting through repeated failures.
-                # Other transient errors get the same bounded retry policy.
-                if attempt + 1 < max_attempts:
-                    time.sleep(1.5 * (attempt + 1))
-                elif model_index + 1 < len(models):
-                    break
-
-    raise last_error or RuntimeError("Gemini request failed")
+    raise RuntimeError("All configured Gemini models failed. " + " | ".join(errors))
 
 
 def _upload_with_retry(c, path: Path):
@@ -125,7 +122,6 @@ def pdf_to_structured(path: Path, prompt: str):
 
 
 def pdf_layout_analysis(path: Path):
-    """Ask Gemini to visually understand every PDF page and return layout JSON."""
     prompt = r'''
 You are the layout reconstruction engine for a PDF-to-Word converter.
 Inspect the uploaded PDF visually, including text, photos, logos, tables, lines,
