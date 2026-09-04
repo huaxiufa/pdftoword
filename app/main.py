@@ -13,7 +13,7 @@ from app.pdf_tools import (
     extract_pages, images_to_pdf, merge_pdfs, pdf_to_images, rotate_pdf,
     split_pdf, compress_pdf, structured_to_xlsx,
 )
-from app.word_renderer import render_editable_pdf
+from app.word_renderer_image_fix import render_editable_pdf
 
 BASE = Path(os.getenv("DATA_DIR", "/app/data")); OUTPUT = BASE / "output"
 UPLOADS = BASE / "uploads"; OUTPUT.mkdir(parents=True, exist_ok=True); UPLOADS.mkdir(parents=True, exist_ok=True)
