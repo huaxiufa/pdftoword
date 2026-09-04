@@ -266,6 +266,10 @@ def _add_floating_image(doc, image_info, element, page_rect):
     run = p.add_run()
     inline = run.add_picture(str(path), width=Inches(width_pt / 72.0), height=Inches(height_pt / 72.0))
     drawing = inline._inline
+
+    # python-docx versions differ in which CT_Inline children are exposed as
+    # properties.  Keep the actual XML children instead of accessing
+    # drawing.cNvGraphicFramePr, which is not available in all versions.
     anchor = OxmlElement("wp:anchor")
     anchor.set("distT", "0")
     anchor.set("distB", "0")
@@ -282,22 +286,28 @@ def _add_floating_image(doc, image_info, element, page_rect):
     simple.set("x", "0")
     simple.set("y", "0")
     anchor.append(simple)
+
     pos_h = OxmlElement("wp:positionH")
     pos_h.set("relativeFrom", "page")
     off_h = OxmlElement("wp:posOffset")
     off_h.text = str(int(max(0, x_pt) * 12700))
     pos_h.append(off_h)
     anchor.append(pos_h)
+
     pos_v = OxmlElement("wp:positionV")
     pos_v.set("relativeFrom", "page")
     off_v = OxmlElement("wp:posOffset")
     off_v.text = str(int(max(0, y_pt) * 12700))
     pos_v.append(off_v)
     anchor.append(pos_v)
-    anchor.append(drawing.extent)
-    anchor.append(drawing.docPr)
-    anchor.append(drawing.cNvGraphicFramePr)
-    anchor.append(drawing.graphic)
+
+    # Reuse the complete inline drawing children (extent, docPr,
+    # cNvGraphicFramePr, graphic) without relying on python-docx property
+    # names.  Deep-copy each node so the source inline can be removed cleanly.
+    from copy import deepcopy
+    for child in list(drawing):
+        anchor.append(deepcopy(child))
+
     anchor.append(OxmlElement("wp:wrapNone"))
     drawing.getparent().replace(drawing, anchor)
 
