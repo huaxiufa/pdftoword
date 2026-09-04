@@ -1,4 +1,5 @@
 from pathlib import Path
+from copy import deepcopy
 
 import fitz
 from docx import Document
@@ -248,7 +249,8 @@ def _match_image(image_map, element, page_rect):
     return min(image_map, key=score)
 
 
-def _add_floating_image(doc, image_info, element, page_rect):
+def _add_floating_image(cell, image_info, element, page_rect):
+    """Insert an absolutely positioned image into the current page's layout cell."""
     path = image_info["path"]
     actual = image_info["rect"]
     width_pt = max(1.0, actual.width)
@@ -260,16 +262,14 @@ def _add_floating_image(doc, image_info, element, page_rect):
         x_pt = _safe_float(element.get("x")) * page_rect.width
         y_pt = _safe_float(element.get("y")) * page_rect.height
 
-    p = doc.add_paragraph()
+    p = cell.add_paragraph()
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.line_spacing = 1
     run = p.add_run()
     inline = run.add_picture(str(path), width=Inches(width_pt / 72.0), height=Inches(height_pt / 72.0))
     drawing = inline._inline
 
-    # python-docx versions differ in which CT_Inline children are exposed as
-    # properties.  Keep the actual XML children instead of accessing
-    # drawing.cNvGraphicFramePr, which is not available in all versions.
     anchor = OxmlElement("wp:anchor")
     anchor.set("distT", "0")
     anchor.set("distB", "0")
@@ -290,21 +290,17 @@ def _add_floating_image(doc, image_info, element, page_rect):
     pos_h = OxmlElement("wp:positionH")
     pos_h.set("relativeFrom", "page")
     off_h = OxmlElement("wp:posOffset")
-    off_h.text = str(int(max(0, x_pt) * 12700))
+    off_h.text = str(round(x_pt * 12700))
     pos_h.append(off_h)
     anchor.append(pos_h)
 
     pos_v = OxmlElement("wp:positionV")
     pos_v.set("relativeFrom", "page")
     off_v = OxmlElement("wp:posOffset")
-    off_v.text = str(int(max(0, y_pt) * 12700))
+    off_v.text = str(round(y_pt * 12700))
     pos_v.append(off_v)
     anchor.append(pos_v)
 
-    # Reuse the complete inline drawing children (extent, docPr,
-    # cNvGraphicFramePr, graphic) without relying on python-docx property
-    # names.  Deep-copy each node so the source inline can be removed cleanly.
-    from copy import deepcopy
     for child in list(drawing):
         anchor.append(deepcopy(child))
 
@@ -312,7 +308,7 @@ def _add_floating_image(doc, image_info, element, page_rect):
     drawing.getparent().replace(drawing, anchor)
 
 
-def _render_column(cell, elements, image_map, page_rect, doc):
+def _render_column(cell, elements, image_map, page_rect):
     cell.text = ""
     for element in elements:
         kind = str(element.get("type") or "text").lower()
@@ -326,7 +322,7 @@ def _render_column(cell, elements, image_map, page_rect, doc):
         elif kind == "image":
             info = _match_image(image_map, element, page_rect)
             if info:
-                _add_floating_image(doc, info, element, page_rect)
+                _add_floating_image(cell, info, element, page_rect)
         elif kind == "line":
             p = cell.add_paragraph()
             p.paragraph_format.space_before = Pt(2)
@@ -390,7 +386,7 @@ def render_editable_pdf(source_pdf, layout, output):
                 _remove_cell_margins(cell)
                 width = max(18.0, (col["w"] / total_detected) * total_w)
                 cell.width = Inches(width / 72.0)
-                _render_column(cell, col["elements"], image_map, page.rect, doc)
+                _render_column(cell, col["elements"], image_map, page.rect)
         doc.save(output)
     finally:
         pdf.close()
