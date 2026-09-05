@@ -3,13 +3,19 @@ import shutil
 import tempfile
 
 
+_pipeline = None
+
+
 def _build_pipeline():
-    try:
-        from paddlex import create_pipeline
-        return create_pipeline(pipeline="PaddleOCR-VL-1.6")
-    except ImportError:
+    global _pipeline
+    if _pipeline is None:
+        # Use the official PaddleOCR-VL Python entry point. Calling
+        # paddlex.create_pipeline() directly can trigger PaddleX's global
+        # initialization more than once in a long-running API process.
         from paddleocr import PaddleOCRVL
-        return PaddleOCRVL()
+
+        _pipeline = PaddleOCRVL(pipeline_version="v1.6")
+    return _pipeline
 
 
 def _merge_docx_parts(parts, output):
