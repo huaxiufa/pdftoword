@@ -22,14 +22,15 @@ def pdf_to_docx(pdf_path: Path, out_path: Path, progress=None) -> None:
         timeout = int(env.get("CONVERSION_TIMEOUT", "1800"))
         cmd = [sys.executable, "-m", "app.worker", str(pdf_path), str(result_dir), str(progress_file)]
         if progress:
-            progress({"stage":"starting","percent":1,"message":"正在启动 PP-OCRv5 + DocLayout-YOLO…"})
+            progress({"stage": "starting", "percent": 1, "message": "正在启动 DocLayout-YOLO + EasyOCR…"})
         with log_file.open("w", encoding="utf-8") as log:
             proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
             started = time.monotonic()
             last = None
             while proc.poll() is None:
                 if time.monotonic() - started > timeout:
-                    proc.kill(); proc.wait()
+                    proc.kill()
+                    proc.wait()
                     raise TimeoutError(f"转换超过 {timeout} 秒")
                 if progress_file.exists():
                     try:
@@ -48,7 +49,7 @@ def pdf_to_docx(pdf_path: Path, out_path: Path, progress=None) -> None:
             raise RuntimeError("没有生成 OCR/layout JSON")
         pages = [json.loads(p.read_text(encoding="utf-8")) for p in json_files]
         if progress:
-            progress({"stage":"rendering","percent":96,"message":"正在生成可编辑 Word…"})
+            progress({"stage": "rendering", "percent": 96, "message": "正在生成可编辑 Word…"})
         CoordinateDocxRenderer(pdf_path).render(pages, out_path)
         if progress:
-            progress({"stage":"done","percent":100,"message":"转换完成"})
+            progress({"stage": "done", "percent": 100, "message": "转换完成"})
