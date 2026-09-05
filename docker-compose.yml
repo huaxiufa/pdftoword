@@ -1,0 +1,11 @@
+services:
+  pdftoword:
+    build: .
+    image: pdftoword-paddleocr:latest
+    ports:
+      - "8000:8000"
+    environment:
+      PADDLE_DEVICE: cpu
+      PADDLEOCR_TIMEOUT: 1800
+      MAX_UPLOAD_MB: 50
+    restart: unless-stopped

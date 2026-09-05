@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PDF → Word</title>
+<style>body{font-family:system-ui,sans-serif;max-width:760px;margin:80px auto;padding:24px}main{border:1px solid #ddd;border-radius:16px;padding:32px}button{padding:10px 18px}#status{margin-top:18px;white-space:pre-wrap}</style></head>
+<body><main><h1>PDF → Word</h1><p>PaddleOCR PP-StructureV3 + PDF 原始坐标恢复，文字和表格尽量保持可编辑。</p><input id="file" type="file" accept="application/pdf"><button id="go">开始转换</button><div id="status"></div></main>
+<script>
+const status=document.querySelector('#status');
+document.querySelector('#go').onclick=async()=>{const f=document.querySelector('#file').files[0];if(!f)return status.textContent='请选择 PDF';const fd=new FormData();fd.append('file',f);status.textContent='正在解析 PDF，CPU 模式可能需要较长时间…';try{const r=await fetch('/convert',{method:'POST',body:fd});if(!r.ok)throw new Error(await r.text());const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name.replace(/\.pdf$/i,'')+'.docx';a.click();status.textContent='转换完成';}catch(e){status.textContent='转换失败：'+e.message}};
+</script></body></html>
