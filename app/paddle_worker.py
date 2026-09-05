@@ -1,11 +1,26 @@
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
 import fitz
 from paddleocr import PPStructureV3
+
+
+MODEL_NAMES = (
+    "PP-DocBlockLayout",
+    "PP-DocLayout_plus-L",
+    "PP-LCNet_x1_0_textline_ori",
+    "PP-OCRv5_server_det",
+    "PP-OCRv5_server_rec",
+    "PP-LCNet_x1_0_table_cls",
+    "SLANeXt_wired",
+    "SLANet_plus",
+    "RT-DETR-L_wired_table_cell_det",
+    "RT-DETR-L_wireless_table_cell_det",
+)
 
 
 def _write_progress(path: Path, stage: str, percent: int, message: str, **extra) -> None:
@@ -14,10 +29,55 @@ def _write_progress(path: Path, stage: str, percent: int, message: str, **extra)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _cached_models() -> list[str]:
+    root = Path(os.getenv("PADDLEX_HOME", "/root/.paddlex")) / "official_models"
+    if not root.exists():
+        return []
+    return [name for name in MODEL_NAMES if (root / name).is_dir()]
+
+
+def _start_init_heartbeat(progress_path: Path | None, total_pages: int):
+    if progress_path is None:
+        return None, None
+
+    stop = threading.Event()
+    started = time.monotonic()
+    cached = _cached_models()
+
+    def run() -> None:
+        while not stop.wait(5):
+            elapsed = int(time.monotonic() - started)
+            current_cached = _cached_models()
+            if len(current_cached) > len(cached):
+                cached[:] = current_cached
+            if len(cached) >= len(MODEL_NAMES):
+                message = f"模型文件已缓存，正在初始化 PP-StructureV3（{elapsed} 秒）…"
+            elif cached:
+                message = f"正在加载模型（已缓存 {len(cached)}/{len(MODEL_NAMES)}，{elapsed} 秒）…"
+            else:
+                message = f"正在初始化 PP-StructureV3（{elapsed} 秒）…"
+            _write_progress(
+                progress_path,
+                "loading",
+                min(4 + elapsed // 30, 7),
+                message,
+                current_page=0,
+                total_pages=total_pages,
+                init_seconds=elapsed,
+                cached_models=len(cached),
+                total_models=len(MODEL_NAMES),
+            )
+
+    thread = threading.Thread(target=run, name="paddle-init-progress", daemon=True)
+    thread.start()
+    return stop, started
+
+
 def main() -> int:
     if len(sys.argv) not in (3, 4):
         print("usage: python -m app.paddle_worker input.pdf output_dir [progress.json]", file=sys.stderr)
         return 2
+
     pdf_path = Path(sys.argv[1])
     output_dir = Path(sys.argv[2])
     progress_path = Path(sys.argv[3]) if len(sys.argv) == 4 else None
@@ -30,38 +90,60 @@ def main() -> int:
     except Exception:
         pass
 
+    cached = _cached_models()
     if progress_path:
         _write_progress(
             progress_path,
             "loading",
             3,
-            "正在准备 PP-StructureV3 模型…",
+            f"正在检查 PP-StructureV3 模型缓存（{len(cached)}/{len(MODEL_NAMES)}）…",
             current_page=0,
             total_pages=total_pages,
+            cached_models=len(cached),
+            total_models=len(MODEL_NAMES),
         )
 
-    # Keep this phase explicit: PP-StructureV3 may download or initialize
-    # several document-analysis models on first use. The Docker compose file
-    # persists /root/.paddlex so subsequent jobs can reuse the cache.
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
     if progress_path:
         _write_progress(
             progress_path,
             "loading",
             4,
-            "首次运行可能需要下载模型，正在初始化…",
+            "模型缓存已就绪，正在初始化 PP-StructureV3…",
             current_page=0,
             total_pages=total_pages,
+            cached_models=len(cached),
+            total_models=len(MODEL_NAMES),
         )
 
-    init_started = time.monotonic()
-    pipeline = PPStructureV3(
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=True,
-        device=os.getenv("PADDLE_DEVICE", "cpu"),
-    )
-    init_seconds = int(time.monotonic() - init_started)
+    heartbeat_stop, init_started = _start_init_heartbeat(progress_path, total_pages)
+    try:
+        pipeline = PPStructureV3(
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=True,
+            device=os.getenv("PADDLE_DEVICE", "cpu"),
+        )
+    except Exception as exc:
+        if heartbeat_stop:
+            heartbeat_stop.set()
+        if progress_path:
+            _write_progress(
+                progress_path,
+                "error",
+                7,
+                f"PP-StructureV3 初始化失败：{exc}",
+                current_page=0,
+                total_pages=total_pages,
+                init_seconds=int(time.monotonic() - (init_started or time.monotonic())),
+            )
+        raise
+    finally:
+        if heartbeat_stop:
+            heartbeat_stop.set()
 
+    init_seconds = int(time.monotonic() - init_started) if init_started else 0
     if progress_path:
         _write_progress(
             progress_path,
