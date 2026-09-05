@@ -1,9 +1,89 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PDF → Word</title>
-<style>body{font-family:system-ui,sans-serif;max-width:760px;margin:80px auto;padding:24px}main{border:1px solid #ddd;border-radius:16px;padding:32px}button{padding:10px 18px}#status{margin-top:18px;white-space:pre-wrap}</style></head>
-<body><main><h1>PDF → Word</h1><p>PaddleOCR PP-StructureV3 + PDF 原始坐标恢复，文字和表格尽量保持可编辑。</p><input id="file" type="file" accept="application/pdf"><button id="go">开始转换</button><div id="status"></div></main>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PDF → Word</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:760px;margin:80px auto;padding:24px;background:#fafafa}
+main{border:1px solid #ddd;border-radius:16px;padding:32px;background:#fff}
+button{padding:10px 18px;cursor:pointer}
+#status{margin-top:18px;white-space:pre-wrap}
+#progress-wrap{display:none;margin-top:18px}
+#progress-bar{height:14px;background:#eee;border-radius:999px;overflow:hidden}
+#progress{height:100%;width:0%;background:#2563eb;transition:width .35s ease}
+#percent{margin-top:8px;font-size:14px;color:#555}
+</style>
+</head>
+<body>
+<main>
+<h1>PDF → Word</h1>
+<p>PaddleOCR PP-StructureV3 + PDF 原始坐标恢复，文字和表格尽量保持可编辑。</p>
+<input id="file" type="file" accept="application/pdf">
+<button id="go">开始转换</button>
+<div id="progress-wrap">
+  <div id="progress-bar"><div id="progress"></div></div>
+  <div id="percent">0%</div>
+</div>
+<div id="status"></div>
+</main>
 <script>
 const status=document.querySelector('#status');
-document.querySelector('#go').onclick=async()=>{const f=document.querySelector('#file').files[0];if(!f)return status.textContent='请选择 PDF';const fd=new FormData();fd.append('file',f);status.textContent='正在解析 PDF，CPU 模式可能需要较长时间…';try{const r=await fetch('/convert',{method:'POST',body:fd});if(!r.ok)throw new Error(await r.text());const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name.replace(/\.pdf$/i,'')+'.docx';a.click();status.textContent='转换完成';}catch(e){status.textContent='转换失败：'+e.message}};
-</script></body></html>
+const button=document.querySelector('#go');
+const progressWrap=document.querySelector('#progress-wrap');
+const progress=document.querySelector('#progress');
+const percent=document.querySelector('#percent');
+
+function setProgress(value,message){
+  const n=Math.max(0,Math.min(100,Number(value)||0));
+  progress.style.width=n+'%';
+  percent.textContent=n+'%'+(message?' · '+message:'');
+  if(message)status.textContent=message;
+}
+
+async function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+
+async function waitForJob(taskId){
+  while(true){
+    const r=await fetch('/progress/'+encodeURIComponent(taskId),{cache:'no-store'});
+    if(!r.ok)throw new Error(await r.text());
+    const data=await r.json();
+    setProgress(data.percent,data.message);
+    if(data.status==='done')return;
+    if(data.status==='error')throw new Error(data.message||'转换失败');
+    await sleep(800);
+  }
+}
+
+document.querySelector('#go').onclick=async()=>{
+  const f=document.querySelector('#file').files[0];
+  if(!f){status.textContent='请选择 PDF';return;}
+  button.disabled=true;
+  progressWrap.style.display='block';
+  setProgress(0,'正在上传 PDF…');
+  try{
+    const fd=new FormData();
+    fd.append('file',f);
+    const r=await fetch('/convert',{method:'POST',body:fd});
+    if(!r.ok)throw new Error(await r.text());
+    const job=await r.json();
+    await waitForJob(job.task_id);
+    setProgress(100,'转换完成，正在下载 Word…');
+    const result=await fetch('/result/'+encodeURIComponent(job.task_id));
+    if(!result.ok)throw new Error(await result.text());
+    const blob=await result.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=f.name.replace(/\.pdf$/i,'')+'.docx';
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    status.textContent='转换完成';
+  }catch(e){
+    status.textContent='转换失败：'+e.message;
+  }finally{
+    button.disabled=false;
+  }
+};
+</script>
+</body>
+</html>
