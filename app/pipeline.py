@@ -1,7 +1,9 @@
+import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import fitz
@@ -9,70 +11,76 @@ import fitz
 from .docx_renderer import CoordinateDocxRenderer
 
 
-def _page_has_native_text(page) -> bool:
-    text = page.get_text("text").strip()
-    return len(text) >= 2
-
-
-def _run_paddle(pdf_path: Path, result_dir: Path) -> None:
-    env = os.environ.copy()
-    env.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-    cmd = [sys.executable, "-m", "app.paddle_worker", str(pdf_path), str(result_dir)]
-    timeout = int(os.getenv("PADDLEOCR_TIMEOUT", "1800"))
-    completed = subprocess.run(
-        cmd, env=env, capture_output=True, text=True, timeout=timeout
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "PaddleOCR failed\nSTDOUT:\n%s\nSTDERR:\n%s"
-            % (completed.stdout[-12000:], completed.stderr[-12000:])
-        )
-
-
-def pdf_to_docx(pdf_path: Path, out_path: Path) -> None:
-    """Fast hybrid PDF -> editable DOCX pipeline.
-
-    Native-text pages never enter PaddleOCR: PyMuPDF supplies text/image/table
-    coordinates directly. Only pages without usable native text are rendered
-    through the isolated PaddleOCR PP-StructureV3 worker.
-    """
+def pdf_to_docx(pdf_path: Path, out_path: Path, progress=None) -> None:
+    """PDF -> PP-StructureV3 layout JSON -> editable coordinate DOCX."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    source = fitz.open(pdf_path)
-    try:
-        native_pages = [i for i, page in enumerate(source) if _page_has_native_text(page)]
-        scan_pages = [i for i in range(len(source)) if i not in set(native_pages)]
+    with tempfile.TemporaryDirectory(prefix="paddle-layout-") as tmp:
+        result_dir = Path(tmp) / "results"
+        result_dir.mkdir()
+        progress_file = Path(tmp) / "progress.json"
+        env = os.environ.copy()
+        env.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        cmd = [
+            sys.executable,
+            "-m",
+            "app.paddle_worker",
+            str(pdf_path),
+            str(result_dir),
+            str(progress_file),
+        ]
+        timeout = int(os.getenv("PADDLEOCR_TIMEOUT", "1800"))
+        if progress:
+            progress({"stage": "starting", "percent": 1, "message": "正在启动 PP-StructureV3…"})
 
-        if not scan_pages:
-            CoordinateDocxRenderer(pdf_path).render_native(out_path)
-            return
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        started = time.monotonic()
+        last = None
+        try:
+            while proc.poll() is None:
+                if time.monotonic() - started > timeout:
+                    proc.kill()
+                    proc.wait()
+                    raise TimeoutError(f"PaddleOCR timed out after {timeout} seconds")
+                if progress_file.exists():
+                    try:
+                        current = json.loads(progress_file.read_text(encoding="utf-8"))
+                        if current != last and progress:
+                            progress(current)
+                        last = current
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                time.sleep(0.5)
 
-        with tempfile.TemporaryDirectory(prefix="paddle-layout-") as tmp:
-            tmp = Path(tmp)
-            scan_pdf = tmp / "scanned-pages.pdf"
-            result_dir = tmp / "results"
-            result_dir.mkdir()
+            if progress_file.exists():
+                try:
+                    current = json.loads(progress_file.read_text(encoding="utf-8"))
+                    if progress:
+                        progress(current)
+                except (OSError, json.JSONDecodeError):
+                    pass
+            output = proc.stdout.read() if proc.stdout else ""
+            if proc.returncode != 0:
+                raise RuntimeError("PaddleOCR failed\n" + output[-12000:])
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
 
-            scan_doc = fitz.open()
-            try:
-                for page_index in scan_pages:
-                    scan_doc.insert_pdf(source, from_page=page_index, to_page=page_index)
-                scan_doc.save(scan_pdf)
-            finally:
-                scan_doc.close()
-
-            _run_paddle(scan_pdf, result_dir)
-            json_files = sorted(
-                result_dir.glob("*.json"), key=lambda p: _page_number(p.name)
-            )
-            if len(json_files) != len(scan_pages):
-                raise RuntimeError(
-                    f"PaddleOCR returned {len(json_files)} pages for {len(scan_pages)} scanned pages"
-                )
-            CoordinateDocxRenderer(pdf_path).render_mixed(
-                out_path, {page_index: json_files[n] for n, page_index in enumerate(scan_pages)}
-            )
-    finally:
-        source.close()
+        json_files = sorted(result_dir.glob("*.json"), key=lambda p: _page_number(p.name))
+        if not json_files:
+            raise RuntimeError("PaddleOCR produced no layout JSON results")
+        if progress:
+            progress({"stage": "rendering", "percent": 96, "message": "正在生成可编辑 Word…"})
+        renderer = CoordinateDocxRenderer(pdf_path)
+        renderer.render(json_files, out_path)
+        if progress:
+            progress({"stage": "done", "percent": 100, "message": "转换完成"})
 
 
 def _page_number(name: str) -> int:
