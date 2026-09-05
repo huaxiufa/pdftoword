@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 import tempfile
@@ -8,16 +9,19 @@ from fastapi.responses import FileResponse
 
 from .pipeline import pdf_to_docx
 
-app = FastAPI(title="PDF to Word", version="2.0.0")
+app = FastAPI(title="PDF to Word", version="2.0.1")
 MAX_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
+
 
 @app.get("/", response_class=FileResponse)
 def index():
     return FileResponse(Path(__file__).parent.parent / "web" / "index.html")
 
+
 @app.get("/health")
 def health():
     return {"ok": True, "engine": "PaddleOCR PP-StructureV3 + coordinate DOCX"}
+
 
 @app.post("/convert")
 async def convert(file: UploadFile = File(...)):
@@ -34,9 +38,16 @@ async def convert(file: UploadFile = File(...)):
                 if size > MAX_MB * 1024 * 1024:
                     raise HTTPException(413, f"File is larger than {MAX_MB} MB")
                 f.write(chunk)
-        pdf_to_docx(pdf_path, out_path)
-        return FileResponse(out_path, filename=f"{Path(file.filename).stem}.docx",
-                            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+        # pdf_to_docx performs a long-running subprocess call. Run it outside
+        # Uvicorn's event loop so /health and other requests remain responsive
+        # while PaddleOCR is processing a PDF.
+        await asyncio.to_thread(pdf_to_docx, pdf_path, out_path)
+        return FileResponse(
+            out_path,
+            filename=f"{Path(file.filename).stem}.docx",
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
     except HTTPException:
         shutil.rmtree(work, ignore_errors=True)
         raise
