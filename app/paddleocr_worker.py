@@ -6,7 +6,7 @@ import tempfile
 
 def _merge_docx_parts(parts, output):
     if not parts:
-        raise RuntimeError("PaddleOCR did not produce any Word pages")
+        raise RuntimeError("No Word pages were produced")
     if len(parts) == 1:
         shutil.copyfile(parts[0], output)
         return
@@ -22,28 +22,29 @@ def _merge_docx_parts(parts, output):
 
 
 def convert(source_pdf: Path, output: Path):
-    # Keep all Paddle/PaddleX imports and initialization inside this process.
-    # The FastAPI process must never import PaddleOCR, avoiding PDX global-state
-    # collisions with other libraries or repeated request handling.
-    from paddleocr import PaddleOCRVL
+    from paddleocr import PPStructureV3
 
-    pipeline = PaddleOCRVL(pipeline_version="v1.6")
+    pipeline = PPStructureV3(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        engine="paddle",
+    )
+
     temp_root = Path(tempfile.mkdtemp(prefix="paddleocr-word-", dir=output.parent))
     try:
-        pages = list(pipeline.predict(input=str(source_pdf)))
-        if not pages:
-            raise RuntimeError("PaddleOCR returned no page results")
-
         page_docs = []
-        for index, result in enumerate(pages, start=1):
+        for index, result in enumerate(
+            pipeline.predict_iter(input=str(source_pdf)), start=1
+        ):
+            print(f"PaddleOCR recovery: processing page {index}", flush=True)
             page_dir = temp_root / f"page-{index}"
             page_dir.mkdir(parents=True, exist_ok=True)
             result.save_to_word(save_path=str(page_dir))
             docs = sorted(page_dir.glob("*.docx"))
             if not docs:
-                raise RuntimeError(f"PaddleOCR did not export Word for page {index}")
+                raise RuntimeError(f"No Word output for page {index}")
             page_docs.append(docs[0])
-
         _merge_docx_parts(page_docs, output)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
