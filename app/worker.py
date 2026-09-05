@@ -6,25 +6,14 @@ import sys
 import time
 from pathlib import Path
 
+import easyocr
 import fitz
 from doclayout_yolo import YOLOv10
 from huggingface_hub import hf_hub_download
-from paddleocr import PaddleOCR
 
 
 def save(path: Path, obj):
     path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
-
-
-def as_dict(result):
-    data = getattr(result, "json", None)
-    if callable(data):
-        data = data()
-    if isinstance(data, dict):
-        return data.get("res", data)
-    if isinstance(result, dict):
-        return result.get("res", result)
-    return {}
 
 
 def layout_boxes(result):
@@ -36,26 +25,39 @@ def layout_boxes(result):
     cls = boxes.cls.cpu().tolist() if getattr(boxes, "cls", None) is not None else [0] * len(xyxy)
     names = getattr(result, "names", {}) or {}
     out = []
-    for b, s, c in zip(xyxy, conf, cls):
-        ci = int(c)
-        out.append({"bbox": [float(x) for x in b], "score": float(s), "label": str(names.get(ci, ci))})
+    for b, score, cls_id in zip(xyxy, conf, cls):
+        ci = int(cls_id)
+        out.append({
+            "bbox": [float(x) for x in b],
+            "score": float(score),
+            "label": str(names.get(ci, ci)),
+            "lines": [],
+        })
     return out
 
 
-def ocr_lines(result):
-    data = as_dict(result)
-    texts = data.get("rec_texts") or []
-    boxes = data.get("rec_boxes") or []
-    scores = data.get("rec_scores") or []
+def ocr_lines(reader: easyocr.Reader, image_path: Path):
+    results = reader.readtext(
+        str(image_path),
+        detail=1,
+        paragraph=False,
+        width_ths=float(os.getenv("OCR_WIDTH_THS", "0.65")),
+        link_threshold=float(os.getenv("OCR_LINK_THRESHOLD", "0.4")),
+        low_text=float(os.getenv("OCR_LOW_TEXT", "0.3")),
+        mag_ratio=float(os.getenv("OCR_MAG_RATIO", "1.0")),
+    )
     out = []
-    for i, text in enumerate(texts):
+    for polygon, text, score in results:
         text = str(text).strip()
-        if not text:
+        if not text or len(polygon) < 4:
             continue
-        b = boxes[i] if i < len(boxes) else None
-        if b is None or len(b) < 4:
-            continue
-        out.append({"text": text, "score": float(scores[i]) if i < len(scores) else 1.0, "bbox": [float(x) for x in b[:4]]})
+        xs = [float(p[0]) for p in polygon]
+        ys = [float(p[1]) for p in polygon]
+        out.append({
+            "text": text,
+            "score": float(score),
+            "bbox": [min(xs), min(ys), max(xs), max(ys)],
+        })
     return out
 
 
@@ -67,76 +69,135 @@ def center_in(box, line):
 
 
 def load_layout_model():
-    # Download the actual checkpoint explicitly. This avoids the doclayout-yolo
-    # fallback to generic yolov10n.pt, which is not the document-layout model.
     repo_id = os.getenv("DOCLAYOUT_MODEL", "juliozhao/DocLayout-YOLO-DocStructBench")
     filename = os.getenv("DOCLAYOUT_MODEL_FILE", "doclayout_yolo_docstructbench_imgsz1024.pt")
     model_path = hf_hub_download(repo_id=repo_id, filename=filename)
     return YOLOv10(model_path)
 
 
+def load_ocr_reader():
+    languages = [x.strip() for x in os.getenv("OCR_LANG", "ch_sim,en").split(",") if x.strip()]
+    return easyocr.Reader(
+        languages,
+        gpu=False,
+        model_storage_directory=os.getenv("EASYOCR_MODEL_DIR", "/root/.EasyOCR/model"),
+        download_enabled=True,
+        verbose=True,
+    )
+
+
 def main():
     if len(sys.argv) != 4:
         print("usage: python -m app.worker input.pdf output_dir progress.json", file=sys.stderr)
         return 2
+
     pdf_path, out_dir, progress_path = map(Path, sys.argv[1:])
     out_dir.mkdir(parents=True, exist_ok=True)
+
     with fitz.open(pdf_path) as pdf:
         total = len(pdf)
         pages = []
+        scale = float(os.getenv("PDF_RENDER_SCALE", "1.75"))
         for i, page in enumerate(pdf):
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.75, 1.75), alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
             image_path = out_dir / f"page-{i:05d}.png"
             pix.save(image_path)
             pages.append((i, page.rect.width, page.rect.height, image_path))
 
-    device = os.getenv("PADDLE_DEVICE", "cpu")
-    threads = int(os.getenv("OCR_CPU_THREADS", os.getenv("OMP_NUM_THREADS", "4")))
-    os.environ.setdefault("OMP_NUM_THREADS", str(threads))
-    os.environ.setdefault("MKL_NUM_THREADS", str(threads))
+    threads = max(1, int(os.getenv("OCR_CPU_THREADS", "1")))
+    os.environ["OMP_NUM_THREADS"] = str(threads)
+    os.environ["MKL_NUM_THREADS"] = str(threads)
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     started = time.monotonic()
+    save(progress_path, {
+        "stage": "models",
+        "percent": 2,
+        "message": "正在加载 DocLayout-YOLO…",
+        "current_page": 0,
+        "total_pages": total,
+    })
     layout_model = load_layout_model()
-    ocr = PaddleOCR(
-        ocr_version="PP-OCRv5",
-        lang=os.getenv("OCR_LANG", "ch"),
-        device=device,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-        cpu_threads=threads,
-    )
+
+    save(progress_path, {
+        "stage": "models",
+        "percent": 4,
+        "message": "正在加载 EasyOCR…",
+        "current_page": 0,
+        "total_pages": total,
+    })
+    reader = load_ocr_reader()
     init = int(time.monotonic() - started)
-    save(progress_path, {"stage": "ocr", "percent": 5, "message": f"PP-OCRv5 + DocLayout-YOLO 已加载（{init}s）", "current_page": 0, "total_pages": total})
+    save(progress_path, {
+        "stage": "ocr",
+        "percent": 5,
+        "message": f"DocLayout-YOLO + EasyOCR 已加载（{init}s）",
+        "current_page": 0,
+        "total_pages": total,
+    })
 
     for n, (page_index, page_w, page_h, image_path) in enumerate(pages, 1):
         layout_result = layout_model.predict(
             str(image_path),
             imgsz=int(os.getenv("DOCLAYOUT_IMGSZ", "1024")),
             conf=float(os.getenv("DOCLAYOUT_CONF", "0.20")),
-            device=device,
+            device="cpu",
             verbose=False,
         )[0]
         regions = layout_boxes(layout_result)
-        ocr_result = next(iter(ocr.predict(str(image_path))))
-        lines = ocr_lines(ocr_result)
+        lines = ocr_lines(reader, image_path)
+
         pix = fitz.Pixmap(image_path)
         iw, ih = pix.width, pix.height
         sx, sy = page_w / iw, page_h / ih
-        for r in regions:
-            r["bbox"] = [r["bbox"][0] * sx, r["bbox"][1] * sy, r["bbox"][2] * sx, r["bbox"][3] * sy]
-            r["lines"] = []
+
+        for region in regions:
+            b = region["bbox"]
+            region["bbox"] = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy]
+
+        orphan_lines = []
         for line in lines:
-            line["bbox"] = [line["bbox"][0] * sx, line["bbox"][1] * sy, line["bbox"][2] * sx, line["bbox"][3] * sy]
+            b = line["bbox"]
+            line["bbox"] = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy]
             matches = [r for r in regions if center_in(r["bbox"], line)]
-            target = min(matches, key=lambda r: (r["bbox"][2] - r["bbox"][0]) * (r["bbox"][3] - r["bbox"][1])) if matches else None
-            if target is not None:
+            if matches:
+                target = min(
+                    matches,
+                    key=lambda r: (r["bbox"][2] - r["bbox"][0]) * (r["bbox"][3] - r["bbox"][1]),
+                )
                 target["lines"].append(line)
+            else:
+                orphan_lines.append(line)
+
+        if orphan_lines:
+            regions.append({
+                "bbox": [0.0, 0.0, page_w, page_h],
+                "score": 1.0,
+                "label": "text",
+                "lines": orphan_lines,
+                "synthetic": True,
+            })
+
         regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
-        for r in regions:
-            r["lines"].sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
-        save(out_dir / f"page-{page_index:05d}.json", {"page_index": page_index, "page_width": page_w, "page_height": page_h, "image_width": iw, "image_height": ih, "regions": regions})
-        save(progress_path, {"stage": "ocr", "percent": 5 + int(n / max(total, 1) * 88), "message": f"正在处理第 {n} / {total} 页…", "current_page": n, "total_pages": total})
+        for region in regions:
+            region["lines"].sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
+
+        save(out_dir / f"page-{page_index:05d}.json", {
+            "page_index": page_index,
+            "page_width": page_w,
+            "page_height": page_h,
+            "image_width": iw,
+            "image_height": ih,
+            "regions": regions,
+        })
+        save(progress_path, {
+            "stage": "ocr",
+            "percent": 5 + int(n / max(total, 1) * 88),
+            "message": f"正在处理第 {n} / {total} 页…",
+            "current_page": n,
+            "total_pages": total,
+        })
+
     return 0
 
 
