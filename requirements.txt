@@ -1,7 +1,7 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 python-multipart==0.0.20
-PyMuPDF==1.26.4
+PyMuPDF==1.26.7
 pdf2docx==0.5.13
 python-docx==1.2.0
 docxcompose==1.4.0
