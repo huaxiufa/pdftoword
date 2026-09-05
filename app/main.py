@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import shutil
@@ -6,102 +8,74 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from .pipeline import pdf_to_docx
 
-app = FastAPI(title="PDF to Word", version="2.1.0")
-MAX_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
+app = FastAPI(title="PDF to Word")
+WEB = Path(__file__).resolve().parent.parent / "web" / "index.html"
 JOBS: dict[str, dict] = {}
 
 
-@app.get("/", response_class=FileResponse)
+def run_job(job_id: str, pdf: Path, docx: Path):
+    def progress(data):
+        JOBS[job_id].update(data)
+    try:
+        pdf_to_docx(pdf, docx, progress)
+        JOBS[job_id]["status"] = "done"
+    except Exception as exc:
+        JOBS[job_id].update(status="error", stage="error", message=str(exc), percent=100)
+    finally:
+        pdf.unlink(missing_ok=True)
+
+
+@app.get("/", response_class=HTMLResponse)
 def index():
-    return FileResponse(Path(__file__).parent.parent / "web" / "index.html")
+    return WEB.read_text(encoding="utf-8")
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "engine": "PaddleOCR PP-StructureV3 + coordinate DOCX"}
+    return {"ok": True}
 
 
 @app.post("/convert")
 async def convert(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Only PDF files are supported")
-
+        raise HTTPException(400, "请上传 PDF 文件")
+    max_mb = int(os.getenv("MAX_UPLOAD_MB", "50"))
     job_id = uuid.uuid4().hex
-    work = Path(tempfile.mkdtemp(prefix=f"pdftoword-{job_id}-"))
-    pdf_path = work / "input.pdf"
-    out_path = work / f"{Path(file.filename).stem}.docx"
-    try:
-        with pdf_path.open("wb") as f:
-            size = 0
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > MAX_MB * 1024 * 1024:
-                    shutil.rmtree(work, ignore_errors=True)
-                    raise HTTPException(413, f"File is larger than {MAX_MB} MB")
-                f.write(chunk)
-    except Exception:
-        shutil.rmtree(work, ignore_errors=True)
-        raise
-
-    JOBS[job_id] = {
-        "status": "queued",
-        "percent": 0,
-        "message": "任务已创建，等待 PP-StructureV3…",
-        "filename": f"{Path(file.filename).stem}.docx",
-        "work": str(work),
-        "output": str(out_path),
-    }
-    asyncio.create_task(_run_job(job_id, pdf_path, out_path))
+    root = Path(tempfile.gettempdir()) / "pdftoword" / job_id
+    root.mkdir(parents=True, exist_ok=True)
+    pdf = root / "input.pdf"
+    docx = root / "output.docx"
+    with pdf.open("wb") as f:
+        size = 0
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_mb * 1024 * 1024:
+                shutil.rmtree(root, ignore_errors=True)
+                raise HTTPException(413, f"文件不能超过 {max_mb} MB")
+            f.write(chunk)
+    JOBS[job_id] = {"status":"running","stage":"queued","percent":0,"message":"任务已创建","current_page":0,"total_pages":0}
+    asyncio.create_task(asyncio.to_thread(run_job, job_id, pdf, docx))
     return {"task_id": job_id}
 
 
 @app.get("/progress/{job_id}")
 def progress(job_id: str):
-    job = JOBS.get(job_id)
-    if not job:
-        raise HTTPException(404, "Task not found")
-    return {
-        "task_id": job_id,
-        "status": job["status"],
-        "percent": job["percent"],
-        "message": job["message"],
-    }
+    if job_id not in JOBS:
+        raise HTTPException(404, "任务不存在")
+    return JOBS[job_id]
 
 
 @app.get("/result/{job_id}")
 def result(job_id: str):
-    job = JOBS.get(job_id)
-    if not job:
-        raise HTTPException(404, "Task not found")
-    if job["status"] != "done":
-        raise HTTPException(409, "Conversion is not complete")
-    output = Path(job["output"])
-    if not output.exists():
-        raise HTTPException(404, "Result file not found")
-    return FileResponse(
-        output,
-        filename=job["filename"],
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-
-
-async def _run_job(job_id: str, pdf_path: Path, out_path: Path):
-    job = JOBS[job_id]
-
-    def update(value):
-        job.update(value)
-        job["status"] = value.get("stage", job["status"])
-
-    try:
-        await asyncio.to_thread(pdf_to_docx, pdf_path, out_path, update)
-        job.update({"status": "done", "percent": 100, "message": "转换完成"})
-    except Exception as exc:
-        job.update({
-            "status": "error",
-            "percent": job.get("percent", 0),
-            "message": f"转换失败：{exc}",
-        })
+    item = JOBS.get(job_id)
+    if not item or item.get("status") != "done":
+        raise HTTPException(404, "结果尚未生成")
+    root = Path(tempfile.gettempdir()) / "pdftoword" / job_id
+    path = root / "output.docx"
+    if not path.exists():
+        raise HTTPException(404, "结果文件不存在")
+    return FileResponse(path, filename="converted.docx", media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
