@@ -4,7 +4,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
     PADDLE_DEVICE=cpu \
-    PADDLEOCR_TIMEOUT=1800
+    PADDLEOCR_TIMEOUT=1800 \
+    PADDLE_CPU_THREADS=4 \
+    OMP_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
