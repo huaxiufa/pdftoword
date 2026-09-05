@@ -8,4 +8,11 @@ services:
       PADDLE_DEVICE: cpu
       PADDLEOCR_TIMEOUT: 1800
       MAX_UPLOAD_MB: 50
+    volumes:
+      - paddlex-cache:/root/.paddlex
+      - paddleocr-cache:/root/.paddleocr
     restart: unless-stopped
+
+volumes:
+  paddlex-cache:
+  paddleocr-cache:
