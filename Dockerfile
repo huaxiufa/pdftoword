@@ -6,13 +6,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
     PADDLE_DEVICE=cpu \
-    PADDLE_CPU_THREADS=4 \
+    PADDLE_CPU_THREADS=1 \
+    OCR_CPU_THREADS=1 \
     OCR_LANG=ch \
     DOCLAYOUT_MODEL=juliozhao/DocLayout-YOLO-DocStructBench \
     DOCLAYOUT_CONF=0.20 \
     DOCLAYOUT_IMGSZ=1024 \
-    OMP_NUM_THREADS=4 \
-    MKL_NUM_THREADS=4
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
