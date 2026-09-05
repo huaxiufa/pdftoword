@@ -8,6 +8,7 @@ from pathlib import Path
 
 import fitz
 from doclayout_yolo import YOLOv10
+from huggingface_hub import hf_hub_download
 from paddleocr import PaddleOCR
 
 
@@ -27,7 +28,6 @@ def as_dict(result):
 
 
 def layout_boxes(result):
-    # DocLayout-YOLO follows the Ultralytics-style result API.
     boxes = getattr(result, "boxes", None)
     if boxes is None:
         return []
@@ -60,10 +60,19 @@ def ocr_lines(result):
 
 
 def center_in(box, line):
-    x0,y0,x1,y1 = box
-    a,b,c,d = line["bbox"]
-    cx, cy = (a+c)/2, (b+d)/2
+    x0, y0, x1, y1 = box
+    a, b, c, d = line["bbox"]
+    cx, cy = (a + c) / 2, (b + d) / 2
     return x0 <= cx <= x1 and y0 <= cy <= y1
+
+
+def load_layout_model():
+    # Download the actual checkpoint explicitly. This avoids the doclayout-yolo
+    # fallback to generic yolov10n.pt, which is not the document-layout model.
+    repo_id = os.getenv("DOCLAYOUT_MODEL", "juliozhao/DocLayout-YOLO-DocStructBench")
+    filename = os.getenv("DOCLAYOUT_MODEL_FILE", "doclayout_yolo_docstructbench_imgsz1024.pt")
+    model_path = hf_hub_download(repo_id=repo_id, filename=filename)
+    return YOLOv10(model_path)
 
 
 def main():
@@ -87,7 +96,7 @@ def main():
     os.environ.setdefault("MKL_NUM_THREADS", str(threads))
 
     started = time.monotonic()
-    layout_model = YOLOv10.from_pretrained(os.getenv("DOCLAYOUT_MODEL", "juliozhao/DocLayout-YOLO-DocStructBench"))
+    layout_model = load_layout_model()
     ocr = PaddleOCR(
         ocr_version="PP-OCRv5",
         lang=os.getenv("OCR_LANG", "ch"),
@@ -98,29 +107,36 @@ def main():
         cpu_threads=threads,
     )
     init = int(time.monotonic() - started)
-    save(progress_path, {"stage":"ocr","percent":5,"message":f"PP-OCRv5 + DocLayout-YOLO 已加载（{init}s）","current_page":0,"total_pages":total})
+    save(progress_path, {"stage": "ocr", "percent": 5, "message": f"PP-OCRv5 + DocLayout-YOLO 已加载（{init}s）", "current_page": 0, "total_pages": total})
 
     for n, (page_index, page_w, page_h, image_path) in enumerate(pages, 1):
-        layout_result = layout_model.predict(str(image_path), imgsz=int(os.getenv("DOCLAYOUT_IMGSZ","1024")), conf=float(os.getenv("DOCLAYOUT_CONF","0.20")), device=device, verbose=False)[0]
+        layout_result = layout_model.predict(
+            str(image_path),
+            imgsz=int(os.getenv("DOCLAYOUT_IMGSZ", "1024")),
+            conf=float(os.getenv("DOCLAYOUT_CONF", "0.20")),
+            device=device,
+            verbose=False,
+        )[0]
         regions = layout_boxes(layout_result)
         ocr_result = next(iter(ocr.predict(str(image_path))))
         lines = ocr_lines(ocr_result)
-        iw, ih = fitz.Pixmap(image_path).width, fitz.Pixmap(image_path).height
+        pix = fitz.Pixmap(image_path)
+        iw, ih = pix.width, pix.height
         sx, sy = page_w / iw, page_h / ih
         for r in regions:
-            r["bbox"] = [r["bbox"][0]*sx, r["bbox"][1]*sy, r["bbox"][2]*sx, r["bbox"][3]*sy]
+            r["bbox"] = [r["bbox"][0] * sx, r["bbox"][1] * sy, r["bbox"][2] * sx, r["bbox"][3] * sy]
             r["lines"] = []
         for line in lines:
-            line["bbox"] = [line["bbox"][0]*sx, line["bbox"][1]*sy, line["bbox"][2]*sx, line["bbox"][3]*sy]
+            line["bbox"] = [line["bbox"][0] * sx, line["bbox"][1] * sy, line["bbox"][2] * sx, line["bbox"][3] * sy]
             matches = [r for r in regions if center_in(r["bbox"], line)]
-            target = min(matches, key=lambda r: (r["bbox"][2]-r["bbox"][0])*(r["bbox"][3]-r["bbox"][1])) if matches else None
+            target = min(matches, key=lambda r: (r["bbox"][2] - r["bbox"][0]) * (r["bbox"][3] - r["bbox"][1])) if matches else None
             if target is not None:
                 target["lines"].append(line)
         regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
         for r in regions:
             r["lines"].sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
-        save(out_dir / f"page-{page_index:05d}.json", {"page_index":page_index,"page_width":page_w,"page_height":page_h,"image_width":iw,"image_height":ih,"regions":regions})
-        save(progress_path, {"stage":"ocr","percent":5+int(n/max(total,1)*88),"message":f"正在处理第 {n} / {total} 页…","current_page":n,"total_pages":total})
+        save(out_dir / f"page-{page_index:05d}.json", {"page_index": page_index, "page_width": page_w, "page_height": page_h, "image_width": iw, "image_height": ih, "regions": regions})
+        save(progress_path, {"stage": "ocr", "percent": 5 + int(n / max(total, 1) * 88), "message": f"正在处理第 {n} / {total} 页…", "current_page": n, "total_pages": total})
     return 0
 
 
