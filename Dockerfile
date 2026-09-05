@@ -4,16 +4,15 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-    PADDLE_DEVICE=cpu \
-    PADDLE_CPU_THREADS=1 \
-    OCR_CPU_THREADS=1 \
-    OCR_LANG=ch \
     DOCLAYOUT_MODEL=juliozhao/DocLayout-YOLO-DocStructBench \
+    DOCLAYOUT_MODEL_FILE=doclayout_yolo_docstructbench_imgsz1024.pt \
     DOCLAYOUT_CONF=0.20 \
     DOCLAYOUT_IMGSZ=1024 \
+    OCR_LANG=ch_sim,en \
+    OCR_CPU_THREADS=1 \
     OMP_NUM_THREADS=1 \
-    MKL_NUM_THREADS=1
+    MKL_NUM_THREADS=1 \
+    TOKENIZERS_PARALLELISM=false
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
