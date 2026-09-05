@@ -8,12 +8,12 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.gemini import pdf_layout_analysis, pdf_to_structured
+from app.gemini import pdf_to_structured
 from app.pdf_tools import (
     extract_pages, images_to_pdf, merge_pdfs, pdf_to_images, rotate_pdf,
     split_pdf, compress_pdf, structured_to_xlsx,
 )
-from app.pdf_native_renderer import render_editable_pdf
+from app.paddleocr_renderer import render_editable_pdf
 
 BASE = Path(os.getenv("DATA_DIR", "/app/data")); OUTPUT = BASE / "output"
 UPLOADS = BASE / "uploads"; OUTPUT.mkdir(parents=True, exist_ok=True); UPLOADS.mkdir(parents=True, exist_ok=True)
@@ -53,9 +53,8 @@ async def tool(tool: str, files: list[UploadFile] = File(...), pages: str = "", 
         elif tool=="pdf-to-images": targets=pdf_to_images(saved[0],work,"png"); shutil.make_archive(str(OUTPUT/task),"zip",work); return {"download_url":f"/api/v1/files/{task}.zip","count":len(targets)}
         elif tool=="images-to-pdf": out=OUTPUT/f"{task}.pdf"; images_to_pdf(saved,out)
         elif tool=="pdf-to-word":
-            try: layout=pdf_layout_analysis(saved[0])
-            except json.JSONDecodeError as exc: raise HTTPException(502,f"Gemini returned invalid layout JSON: {exc.msg}") from exc
-            out=OUTPUT/f"{task}.docx"; render_editable_pdf(saved[0],layout,out)
+            out=OUTPUT/f"{task}.docx"
+            render_editable_pdf(saved[0],out)
         elif tool=="pdf-to-excel":
             raw=pdf_to_structured(saved[0],'''Extract all tables from this PDF. Return ONLY valid JSON: {"rows":[["cell1","cell2"]]}. Include column headers when present. Preserve values exactly; if there are multiple tables, append them separated by a blank row. Do not invent data.''').strip(); cleaned=raw.removeprefix("```json").removesuffix("```").strip()
             try: data=json.loads(cleaned)
