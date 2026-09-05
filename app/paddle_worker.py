@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import fitz
@@ -34,26 +35,42 @@ def main() -> int:
             progress_path,
             "loading",
             3,
-            "正在加载 PP-StructureV3 模型…",
+            "正在准备 PP-StructureV3 模型…",
             current_page=0,
             total_pages=total_pages,
         )
 
+    # Keep this phase explicit: PP-StructureV3 may download or initialize
+    # several document-analysis models on first use. The Docker compose file
+    # persists /root/.paddlex so subsequent jobs can reuse the cache.
+    if progress_path:
+        _write_progress(
+            progress_path,
+            "loading",
+            4,
+            "首次运行可能需要下载模型，正在初始化…",
+            current_page=0,
+            total_pages=total_pages,
+        )
+
+    init_started = time.monotonic()
     pipeline = PPStructureV3(
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=True,
         device=os.getenv("PADDLE_DEVICE", "cpu"),
     )
+    init_seconds = int(time.monotonic() - init_started)
 
     if progress_path:
         _write_progress(
             progress_path,
             "ocr",
             8,
-            "PP-StructureV3 已启动，开始识别…",
+            f"PP-StructureV3 已启动（模型初始化 {init_seconds} 秒），开始识别…",
             current_page=0,
             total_pages=total_pages,
+            init_seconds=init_seconds,
         )
 
     results = pipeline.predict(input=str(pdf_path))
