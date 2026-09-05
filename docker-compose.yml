@@ -2,30 +2,21 @@ services:
   pdftoword:
     build:
       context: .
-    image: pdftoword-paddleocr-yolo:latest
+    image: pdftoword-doclayout-easyocr:latest
     ports:
       - "8000:8000"
     environment:
-      PADDLE_DEVICE: ${PADDLE_DEVICE:-cpu}
-      PADDLE_CPU_THREADS: ${PADDLE_CPU_THREADS:-4}
-      OCR_LANG: ${OCR_LANG:-ch}
       DOCLAYOUT_CONF: ${DOCLAYOUT_CONF:-0.20}
       DOCLAYOUT_IMGSZ: ${DOCLAYOUT_IMGSZ:-1024}
-      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
-      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-4}
+      OCR_LANG: ${OCR_LANG:-ch_sim,en}
+      OCR_CPU_THREADS: ${OCR_CPU_THREADS:-1}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
+      CONVERSION_TIMEOUT: ${CONVERSION_TIMEOUT:-1800}
     volumes:
-      - paddle-cache:/root/.paddleocr
       - hf-cache:/root/.cache/huggingface
-    shm_size: "1gb"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
-      interval: 30s
-      timeout: 5s
-      start_period: 30s
-      retries: 3
+      - easyocr-cache:/root/.EasyOCR
     restart: unless-stopped
 
 volumes:
-  paddle-cache:
   hf-cache:
+  easyocr-cache:
