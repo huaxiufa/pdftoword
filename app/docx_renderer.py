@@ -7,15 +7,42 @@ import fitz
 from .docx_renderer_v3 import V3Renderer
 
 
-def _rotate_image_bytes(blob: bytes, angle: int) -> bytes:
-    """Rotate extracted image bytes to match its PDF display transform."""
-    if angle % 360 == 0:
+def _quarter_turn_from_transform(transform) -> int:
+    """Return the clockwise quarter-turn encoded by a PDF image transform.
+
+    PyMuPDF matrices use ``[a, b, c, d, e, f]``.  In image transforms,
+    ``Matrix(0, -s, s, 0, ...)`` is a 90-degree *clockwise* image rotation.
+    Therefore the displayed clockwise angle is ``-atan2(b, a)`` rather than
+    ``atan2(b, a)``.  The previous implementation used the opposite sign,
+    which is why rotated PDF images could appear rotated the wrong way in Word.
+    """
+    if transform is None:
+        return 0
+    try:
+        m = fitz.Matrix(transform)
+        raw = math.degrees(math.atan2(m.b, m.a))
+        clockwise = (-raw) % 360
+        return min(
+            (0, 90, 180, 270),
+            key=lambda a: abs(((clockwise - a + 180) % 360) - 180),
+        )
+    except Exception:
+        return 0
+
+
+def _rotate_image_bytes(blob: bytes, clockwise_angle: int) -> bytes:
+    """Bake the PDF image rotation into the image bytes.
+
+    ``Pixmap.flip_rotate`` uses numeric modes where 1 is 90 CCW and 2 is
+    270 CCW (90 clockwise).  The PDF transform angle passed here is clockwise,
+    so 90 and 270 intentionally map to the opposite PyMuPDF modes.
+    """
+    angle = clockwise_angle % 360
+    if angle == 0:
         return blob
     try:
         pix = fitz.Pixmap(blob)
-        # PyMuPDF Pixmap.flip_rotate uses numeric modes:
-        # 1=90 CCW, 2=270 CCW, 3=180.
-        mode = {90: 1, 180: 3, 270: 2}.get(angle % 360)
+        mode = {90: 2, 180: 3, 270: 1}.get(angle)
         if mode is None:
             return blob
         rotated = pix.flip_rotate(mode)
@@ -25,13 +52,15 @@ def _rotate_image_bytes(blob: bytes, angle: int) -> bytes:
 
 
 def _render_images_fixed(self, doc, page):
-    """Render each displayed image occurrence using its real PDF transform.
+    """Render every displayed image at its exact PDF bbox and orientation.
 
-    PyMuPDF's image blocks provide both the displayed bbox and the transformation
-    matrix used to map the source image into that bbox. We use the bbox for the
-    Word page position and rotate the extracted bytes from that matrix, rather
-    than guessing from the raw XObject. This preserves repeated / transformed
-    occurrences of the same image independently.
+    ``Page.get_text("dict")`` is deliberately used instead of ``get_images``:
+    PyMuPDF reports one image block for every displayed occurrence, including
+    repeated XObjects, and each block contains both the displayed ``bbox`` and
+    the image transformation matrix.  Coordinates returned by extraction are in
+    unrotated page space; ``page.rotation_matrix`` converts them to the visible
+    page space used by the Word section.  This applies page rotation exactly
+    once and image rotation separately.
     """
     seen = set()
     page_rot = int(page.rotation or 0) % 360
@@ -56,30 +85,23 @@ def _render_images_fixed(self, doc, page):
             if rect.width <= 1 or rect.height <= 1:
                 continue
 
-            # Image-block bboxes are in the page's unrotated coordinate system.
-            # The Word section uses page.rect, so convert coordinates exactly once.
+            # PyMuPDF extraction coordinates are unrotated.  Word's section
+            # dimensions come from page.rect, which reflects page rotation.
+            # Convert the bbox exactly once into that visible coordinate space.
             placed = rect * page.rotation_matrix if page_rot else rect
 
-            # The transform describes the source image's orientation inside its
-            # displayed bbox. Word receives the extracted source bytes, so apply
-            # that orientation to the bytes before placing them.
-            angle = 0
-            if transform is not None:
-                try:
-                    m = fitz.Matrix(transform)
-                    angle = round(math.degrees(math.atan2(m.b, m.a))) % 360
-                    # PDF image transforms can encode a reflected axis; for the
-                    # normal PDF image cases handled here, normalize to quarter turns.
-                    angle = min((0, 90, 180, 270), key=lambda a: abs(((angle - a + 180) % 360) - 180))
-                except Exception:
-                    angle = 0
+            # Bake the image's own PDF transform into its bytes.  Do NOT rotate
+            # the bbox again: the bbox already describes the displayed footprint.
+            image_angle = _quarter_turn_from_transform(transform)
+            placed_blob = _rotate_image_bytes(blob, image_angle)
 
-            placed_blob = _rotate_image_bytes(blob, angle)
-
+            # Keep distinct occurrences.  The same source image can legitimately
+            # appear multiple times at different locations / transforms.
             key = (
                 round(placed.x0, 2), round(placed.y0, 2),
                 round(placed.x1, 2), round(placed.y1, 2),
-                len(placed_blob), angle,
+                image_angle,
+                len(placed_blob),
             )
             if key in seen:
                 continue
