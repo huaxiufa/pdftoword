@@ -7,12 +7,16 @@ import fitz
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+from docx.oxml.ns import nsmap, qn
 from docx.shared import Pt
 
 EMU_PER_PT = 12700
 WPS_URI = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
 PICTURE_URI = "http://schemas.openxmlformats.org/drawingml/2006/picture"
+
+# python-docx's OxmlElement accepts namespace prefixes (e.g. ``wps:wsp``),
+# but the newer WordprocessingShape namespace is not registered by default.
+nsmap.setdefault("wps", WPS_URI)
 
 
 def el(tag: str):
