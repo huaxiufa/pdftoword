@@ -3,23 +3,31 @@ from __future__ import annotations
 import math
 
 import fitz
-from docx.shared import Pt
 
 from .docx_renderer_v3 import V3Renderer
 
 
 # PyMuPDF image coordinates are reported in unrotated page space, while
-# Page.rect reflects page rotation.  The V3 renderer previously used the raw
+# Page.rect reflects page rotation. The V3 renderer previously used the raw
 # image rectangle and raw image bytes, which makes rotated / transformed PDF
-# images appear displaced or rotated in Word.  Patch only the image layer here
+# images appear displaced or rotated in Word. Patch only the image layer here
 # so the rest of the V3 text/table renderer remains unchanged.
+#
+# Use the documented integer transformation modes rather than relying on
+# Pixmap.ROTATE_* attributes: some installed PyMuPDF builds expose the modes
+# only as documented numeric values.
+_ROTATE_90 = 1
+_ROTATE_270 = 2
+_ROTATE_180 = 3
+
+
 def _render_images_fixed(self, doc, page):
     seen = set()
     page_rot = int(page.rotation or 0) % 360
     rot_modes = {
-        90: fitz.Pixmap.ROTATE_90,
-        180: fitz.Pixmap.ROTATE_180,
-        270: fitz.Pixmap.ROTATE_270,
+        90: _ROTATE_90,
+        180: _ROTATE_180,
+        270: _ROTATE_270,
     }
 
     for image in page.get_images(full=True):
