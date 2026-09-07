@@ -1,12 +1,38 @@
 from __future__ import annotations
 
+import math
+
 import fitz
 
 from .docx_renderer_v3 import V3Renderer
 
 
+def _rotate_image_bytes(blob: bytes, angle: int) -> bytes:
+    """Rotate extracted image bytes to match its PDF display transform."""
+    if angle % 360 == 0:
+        return blob
+    try:
+        pix = fitz.Pixmap(blob)
+        # PyMuPDF Pixmap.flip_rotate uses numeric modes:
+        # 1=90 CCW, 2=270 CCW, 3=180.
+        mode = {90: 1, 180: 3, 270: 2}.get(angle % 360)
+        if mode is None:
+            return blob
+        rotated = pix.flip_rotate(mode)
+        return rotated.tobytes("png")
+    except Exception:
+        return blob
+
+
 def _render_images_fixed(self, doc, page):
-    """Render displayed PDF image blocks without reconstructing transforms."""
+    """Render each displayed image occurrence using its real PDF transform.
+
+    PyMuPDF's image blocks provide both the displayed bbox and the transformation
+    matrix used to map the source image into that bbox. We use the bbox for the
+    Word page position and rotate the extracted bytes from that matrix, rather
+    than guessing from the raw XObject. This preserves repeated / transformed
+    occurrences of the same image independently.
+    """
     seen = set()
     page_rot = int(page.rotation or 0) % 360
 
@@ -21,6 +47,7 @@ def _render_images_fixed(self, doc, page):
 
         bbox = block.get("bbox")
         blob = block.get("image")
+        transform = block.get("transform")
         if not bbox or not blob:
             continue
 
@@ -29,15 +56,30 @@ def _render_images_fixed(self, doc, page):
             if rect.width <= 1 or rect.height <= 1:
                 continue
 
-            # PyMuPDF returns extraction coordinates in unrotated page space.
-            # The renderer creates the Word section using page.rect, which
-            # reflects the visible rotation, so apply rotation exactly once.
+            # Image-block bboxes are in the page's unrotated coordinate system.
+            # The Word section uses page.rect, so convert coordinates exactly once.
             placed = rect * page.rotation_matrix if page_rot else rect
+
+            # The transform describes the source image's orientation inside its
+            # displayed bbox. Word receives the extracted source bytes, so apply
+            # that orientation to the bytes before placing them.
+            angle = 0
+            if transform is not None:
+                try:
+                    m = fitz.Matrix(transform)
+                    angle = round(math.degrees(math.atan2(m.b, m.a))) % 360
+                    # PDF image transforms can encode a reflected axis; for the
+                    # normal PDF image cases handled here, normalize to quarter turns.
+                    angle = min((0, 90, 180, 270), key=lambda a: abs(((angle - a + 180) % 360) - 180))
+                except Exception:
+                    angle = 0
+
+            placed_blob = _rotate_image_bytes(blob, angle)
 
             key = (
                 round(placed.x0, 2), round(placed.y0, 2),
                 round(placed.x1, 2), round(placed.y1, 2),
-                len(blob),
+                len(placed_blob), angle,
             )
             if key in seen:
                 continue
@@ -48,7 +90,7 @@ def _render_images_fixed(self, doc, page):
             )
             self._add_positioned_image(
                 doc,
-                blob,
+                placed_blob,
                 placed.x0,
                 placed.y0,
                 placed.width,
