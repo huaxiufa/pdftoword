@@ -33,4 +33,4 @@ docker compose up --build
 - LibreOffice 在容器内负责最终 HTML → DOCX。
 - 如果 Gemini 返回异常，当前版本会直接报错，不会偷偷切回旧 OCR 引擎。
 
-Google 官方文档说明 Gemini 可以直接接收 PDF，并通过 Files API 上传后调用模型处理 PDF。citeturn0search0turn0search1
+Gemini 官方 API 支持直接上传 PDF 并让模型进行文档理解；本项目使用 Python `google-genai` SDK 的 Files API。
