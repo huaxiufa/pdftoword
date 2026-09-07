@@ -23,25 +23,21 @@ def el(tag: str):
     return OxmlElement(tag)
 
 
-def set_attr(node, name: str, value):
-    node.set(qn(name), str(value))
-
-
-def _anchor_position(node, x: float, y: float, w: float, h: float, ident: int, name: str):
+def _anchor_position(x: float, y: float, w: float, h: float, ident: int, name: str, behind: bool = False):
     anchor = el("wp:anchor")
     for k, v in {
         "distT": "0", "distB": "0", "distL": "0", "distR": "0",
-        "simplePos": "0", "relativeHeight": "10", "behindDoc": "0",
+        "simplePos": "0", "relativeHeight": "0", "behindDoc": "1" if behind else "0",
         "locked": "0", "layoutInCell": "1", "allowOverlap": "1",
     }.items():
         anchor.set(k, v)
     simple = el("wp:simplePos")
     simple.set("x", "0"); simple.set("y", "0")
     anchor.append(simple)
-    for tag, value in (("wp:positionH", x), ("wp:positionV", y)):
-        pos = el(tag); pos.set("relativeFrom", "page")
-        off = el("wp:posOffset"); off.text = str(int(value * EMU_PER_PT))
-        pos.append(off); anchor.append(pos)
+    pos_h = el("wp:positionH"); pos_h.set("relativeFrom", "page")
+    off_h = el("wp:posOffset"); off_h.text = str(int(x * EMU_PER_PT)); pos_h.append(off_h); anchor.append(pos_h)
+    pos_v = el("wp:positionV"); pos_v.set("relativeFrom", "page")
+    off_v = el("wp:posOffset"); off_v.text = str(int(y * EMU_PER_PT)); pos_v.append(off_v); anchor.append(pos_v)
     extent = el("wp:extent")
     extent.set("cx", str(max(1, int(w * EMU_PER_PT))))
     extent.set("cy", str(max(1, int(h * EMU_PER_PT))))
@@ -53,13 +49,15 @@ def _anchor_position(node, x: float, y: float, w: float, h: float, ident: int, n
     docpr = el("wp:docPr")
     docpr.set("id", str(ident)); docpr.set("name", name)
     anchor.append(docpr)
-    anchor.append(el("wp:cNvGraphicFramePr"))
+    cNv = el("wp:cNvGraphicFramePr")
+    cNv.append(el("a:graphicFrameLocks"))
+    anchor.append(cNv)
     return anchor
 
 
 def make_textbox(x: float, y: float, w: float, h: float, text: str, font_pt: float,
                  bold: bool = False, italic: bool = False, align: str = "left", ident: int = 1):
-    anchor = _anchor_position(el("x"), x, y, w, h, ident, f"Text {ident}") if False else _anchor_position(None, x, y, w, h, ident, f"Text {ident}")
+    anchor = _anchor_position(x, y, w, h, ident, f"Text {ident}")
     graphic = el("a:graphic")
     data = el("a:graphicData"); data.set("uri", WPS_URI)
     wsp = el("wps:wsp")
@@ -74,6 +72,7 @@ def make_textbox(x: float, y: float, w: float, h: float, text: str, font_pt: flo
 
     txbx = el("wps:txbx")
     content = el("w:txbxContent")
+    lines = str(text).splitlines() or [""]
     p = el("w:p")
     ppr = el("w:pPr")
     spacing = el("w:spacing")
@@ -82,14 +81,17 @@ def make_textbox(x: float, y: float, w: float, h: float, text: str, font_pt: flo
     ppr.append(spacing)
     jc = el("w:jc"); jc.set(qn("w:val"), align); ppr.append(jc)
     p.append(ppr)
-    r = el("w:r")
-    rpr = el("w:rPr")
-    sz = el("w:sz"); sz.set(qn("w:val"), str(max(8, min(96, round(font_pt * 2))))); rpr.append(sz)
-    szcs = el("w:szCs"); szcs.set(qn("w:val"), str(max(8, min(96, round(font_pt * 2))))); rpr.append(szcs)
-    if bold: rpr.append(el("w:b"))
-    if italic: rpr.append(el("w:i"))
-    r.append(rpr)
-    wt = el("w:t"); wt.text = text; r.append(wt); p.append(r)
+    for i, line in enumerate(lines):
+        if i:
+            p.append(el("w:br"))
+        r = el("w:r")
+        rpr = el("w:rPr")
+        sz = el("w:sz"); sz.set(qn("w:val"), str(max(8, min(96, round(font_pt * 2))))); rpr.append(sz)
+        szcs = el("w:szCs"); szcs.set(qn("w:val"), str(max(8, min(96, round(font_pt * 2))))); rpr.append(szcs)
+        if bold: rpr.append(el("w:b"))
+        if italic: rpr.append(el("w:i"))
+        r.append(rpr)
+        wt = el("w:t"); wt.text = line; r.append(wt); p.append(r)
     content.append(p); txbx.append(content); wsp.append(txbx)
     body = el("wps:bodyPr")
     for k in ("lIns", "tIns", "rIns", "bIns"): body.set(k, "0")
@@ -100,21 +102,14 @@ def make_textbox(x: float, y: float, w: float, h: float, text: str, font_pt: flo
 
 
 class V3Renderer:
-    """Hybrid PDF->DOCX renderer.
-
-    Text that can behave like Word content is emitted as native paragraphs/runs.
-    Content whose PDF geometry is important is emitted as positioned DrawingML
-    text boxes. Tables become real Word tables; embedded PDF images remain images.
-    """
+    """Hybrid PDF->DOCX renderer with coordinate-preserved images and editable text."""
 
     def __init__(self, pdf_path: Path):
         self.pdf = fitz.open(pdf_path)
         self.ident = 2000
-        self.font_cache: dict[str, str] = {}
 
     def render(self, pages: list[dict], out_path: Path) -> None:
         doc = Document()
-        # Remove the default empty paragraph so the first page starts cleanly.
         if doc.paragraphs:
             p = doc.paragraphs[0]._element
             p.getparent().remove(p)
@@ -132,10 +127,7 @@ class V3Renderer:
 
     def _render_page(self, doc, page, item):
         regions = item.get("regions", [])
-        # First restore real PDF images. Large full-page images are ignored because
-        # they are normally scanned-page backgrounds and would destroy editability.
         self._render_images(doc, page)
-
         for region in regions:
             label = str(region.get("label", "text")).lower()
             bbox = region.get("bbox") or [0, 0, page.rect.width, page.rect.height]
@@ -143,101 +135,90 @@ class V3Renderer:
             if not lines:
                 continue
             lines = sorted(lines, key=lambda x: (x["bbox"][1], x["bbox"][0]))
-            if label == "table":
-                if self._render_table(doc, lines, bbox):
-                    continue
-            blocks = self._group_lines(lines, label)
-            for block in blocks:
+            if label == "table" and self._render_table(doc, lines, bbox):
+                continue
+            for block in self._group_lines(lines, label):
                 self._render_block(doc, block, label, page.rect)
 
     def _render_images(self, doc, page):
         seen = set()
         for image in page.get_images(full=True):
             xref = image[0]
-            for rect in page.get_image_rects(xref):
-                area = rect.width * rect.height
-                if area >= page.rect.width * page.rect.height * 0.92:
-                    continue
+            rects = page.get_image_rects(xref)
+            for rect in rects:
                 key = (xref, round(rect.x0, 1), round(rect.y0, 1), round(rect.x1, 1), round(rect.y1, 1))
-                if key in seen:
+                if key in seen or rect.width <= 1 or rect.height <= 1:
                     continue
                 seen.add(key)
                 try:
                     pix = fitz.Pixmap(self.pdf, xref)
                     if pix.alpha:
                         pix = fitz.Pixmap(fitz.csRGB, pix)
-                    self._add_positioned_image(doc, pix.tobytes("png"), rect.x0, rect.y0, rect.width, rect.height)
+                    blob = pix.tobytes("png")
+                    # Keep large scanned-page images as page backgrounds so OCR text remains visible.
+                    area_ratio = (rect.width * rect.height) / max(1.0, page.rect.width * page.rect.height)
+                    self._add_positioned_image(doc, blob, rect.x0, rect.y0, rect.width, rect.height,
+                                               behind=area_ratio >= 0.80)
                 except Exception:
                     continue
 
-    def _add_positioned_image(self, doc, blob, x, y, w, h):
+    def _add_positioned_image(self, doc, blob, x, y, w, h, behind=False):
         p = doc.add_paragraph()
         p.paragraph_format.space_before = Pt(0); p.paragraph_format.space_after = Pt(0)
         run = p.add_run()
         inline = run.add_picture(io.BytesIO(blob), width=Pt(max(1, w)), height=Pt(max(1, h)))
-        old = inline._inline
-        anchor = _anchor_position(None, x, y, w, h, self.ident, f"Image {self.ident}")
+        old_inline = inline._inline
+        pic = old_inline.find(qn("pic:pic"))
+        if pic is None:
+            return
+        pic = pic.__deepcopy__({})
+        old_inline.getparent().remove(old_inline)
+
+        anchor = _anchor_position(x, y, w, h, self.ident, f"Image {self.ident}", behind=behind)
         self.ident += 1
         graphic = el("a:graphic")
         data = el("a:graphicData"); data.set("uri", PICTURE_URI)
-        for child in list(old):
-            data.append(child)
-        graphic.append(data); anchor.append(graphic)
-        old.getparent().replace(old, anchor)
+        data.append(pic)
+        graphic.append(data)
+        anchor.append(graphic)
+        p._p.append(el("w:drawing"))
+        p._p[-1].append(anchor)
 
     def _group_lines(self, lines, label):
-        # A line becomes part of the previous paragraph when vertical gap and
-        # horizontal alignment are consistent. This recovers multi-line paragraphs
-        # instead of producing one textbox per OCR line.
         groups = []
         for line in lines:
-            b = line["bbox"]
-            h = max(1.0, b[3] - b[1])
+            b = line["bbox"]; h = max(1.0, b[3] - b[1])
             if not groups:
                 groups.append([line]); continue
-            prev = groups[-1]
-            pb = prev[-1]["bbox"]
-            ph = max(1.0, pb[3] - pb[1])
+            prev = groups[-1]; pb = prev[-1]["bbox"]; ph = max(1.0, pb[3] - pb[1])
             gap = b[1] - pb[3]
             xdiff = abs(b[0] - pb[0])
             overlap = min(b[2], pb[2]) - max(b[0], pb[0])
             compatible_height = 0.55 <= h / ph <= 1.8
             same_column = xdiff <= max(8, ph * 1.8) or overlap > 0
             max_gap = max(4.0, ph * 0.9)
-            # Headings/captions are intentionally kept as separate blocks.
             if label in {"title", "section_header", "header", "footer", "caption", "figure_caption", "table_caption"}:
                 compatible = gap <= ph * 0.35 and xdiff <= ph * 1.5
             else:
                 compatible = gap <= max_gap and same_column and compatible_height
-            if compatible:
-                prev.append(line)
-            else:
-                groups.append([line])
+            if compatible: prev.append(line)
+            else: groups.append([line])
         return groups
 
     def _render_block(self, doc, block, label, page_rect):
-        x0 = min(float(x["bbox"][0]) for x in block)
-        y0 = min(float(x["bbox"][1]) for x in block)
-        x1 = max(float(x["bbox"][2]) for x in block)
-        y1 = max(float(x["bbox"][3]) for x in block)
+        x0 = min(float(x["bbox"][0]) for x in block); y0 = min(float(x["bbox"][1]) for x in block)
+        x1 = max(float(x["bbox"][2]) for x in block); y1 = max(float(x["bbox"][3]) for x in block)
         text = "\n".join(str(x.get("text", "")).strip() for x in block if str(x.get("text", "")).strip())
-        if not text:
-            return
+        if not text: return
         font_pt = self._font_size(block)
         bold = label in {"title", "section_header", "header"} or font_pt >= 15
         italic = label in {"caption", "figure_caption", "table_caption"}
         align = self._alignment(block, page_rect.width)
-
-        # Short, body-like blocks are emitted as native Word paragraphs. They are
-        # genuinely editable and reflow better than a shape. Headings and geometry-
-        # sensitive blocks stay positioned.
         body_like = label in {"plain_text", "text", "paragraph", "list", "list_item", "body"}
         narrow = (x1 - x0) < page_rect.width * 0.88
-        simple = len(block) >= 1 and all("\n" not in str(x.get("text", "")) for x in block)
+        simple = all("\n" not in str(x.get("text", "")) for x in block)
         if body_like and narrow and simple and self._is_flow_safe(block):
-            self._native_paragraph(doc, block, font_pt, bold, italic, align)
-            return
-
+            self._native_paragraph(doc, block, font_pt, bold, italic, align); return
         p = doc.add_paragraph()
         p.paragraph_format.space_before = Pt(0); p.paragraph_format.space_after = Pt(0)
         anchor = make_textbox(x0, y0, max(3, x1 - x0), max(font_pt * 1.25, y1 - y0 + 2), text,
@@ -246,135 +227,88 @@ class V3Renderer:
         drawing = el("w:drawing"); drawing.append(anchor); p._p.append(drawing)
 
     def _native_paragraph(self, doc, block, font_pt, bold, italic, align):
-        p = doc.add_paragraph()
-        pf = p.paragraph_format
-        pf.space_before = Pt(0); pf.space_after = Pt(0)
-        pf.line_spacing = max(0.85, min(1.4, 1.05))
+        p = doc.add_paragraph(); pf = p.paragraph_format
+        pf.space_before = Pt(0); pf.space_after = Pt(0); pf.line_spacing = 1.05
         p.alignment = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER,
                        "right": WD_ALIGN_PARAGRAPH.RIGHT, "justify": WD_ALIGN_PARAGRAPH.JUSTIFY}.get(align, WD_ALIGN_PARAGRAPH.LEFT)
         for i, line in enumerate(block):
-            if i:
-                p.add_run().add_break()
+            if i: p.add_run().add_break()
             run = p.add_run(str(line.get("text", "")).strip())
-            run.font.size = Pt(font_pt)
-            run.bold = bold
-            run.italic = italic
+            run.font.size = Pt(font_pt); run.bold = bold; run.italic = italic
             run.font.name = self._font_name(line.get("text", ""))
-        # Preserve approximate left offset with paragraph indentation where possible.
         x0 = min(float(x["bbox"][0]) for x in block)
-        if x0 > 3:
-            pf.left_indent = Pt(x0)
+        if x0 > 3: pf.left_indent = Pt(x0)
 
     def _render_table(self, doc, lines, bbox):
         rows = self._cluster_rows(lines)
-        if len(rows) < 2:
-            return False
+        if len(rows) < 2: return False
         col_edges = self._infer_columns(rows, bbox)
-        if len(col_edges) < 2:
-            return False
-        table = doc.add_table(rows=len(rows), cols=len(col_edges) - 1)
-        table.autofit = False
+        if len(col_edges) < 2: return False
+        table = doc.add_table(rows=len(rows), cols=len(col_edges) - 1); table.autofit = False
         for r, row in enumerate(rows):
             for line in row:
                 b = line["bbox"]; cx = (b[0] + b[2]) / 2
                 c = min(len(col_edges) - 2, max(0, self._edge_index(col_edges, cx)))
-                cell = table.cell(r, c)
-                if cell.text:
-                    cell.text += " " + str(line.get("text", "")).strip()
-                else:
-                    cell.text = str(line.get("text", "")).strip()
+                cell = table.cell(r, c); text = str(line.get("text", "")).strip()
+                cell.text = (cell.text + " " + text).strip() if cell.text else text
                 for p in cell.paragraphs:
-                    for run in p.runs:
-                        run.font.size = Pt(self._font_size([line]))
+                    for run in p.runs: run.font.size = Pt(self._font_size([line]))
         return True
 
     @staticmethod
     def _cluster_rows(lines):
         rows = []
         for line in sorted(lines, key=lambda z: (z["bbox"][1], z["bbox"][0])):
-            y0, y1 = line["bbox"][1], line["bbox"][3]
-            cy = (y0 + y1) / 2
-            placed = False
+            cy = (line["bbox"][1] + line["bbox"][3]) / 2; placed = False
             for row in rows:
                 rcy = sum((x["bbox"][1] + x["bbox"][3]) / 2 for x in row) / len(row)
                 rh = max(x["bbox"][3] - x["bbox"][1] for x in row)
-                if abs(cy - rcy) <= max(3, rh * 0.65):
-                    row.append(line); placed = True; break
-            if not placed:
-                rows.append([line])
+                if abs(cy - rcy) <= max(3, rh * 0.65): row.append(line); placed = True; break
+            if not placed: rows.append([line])
         return [sorted(r, key=lambda z: z["bbox"][0]) for r in rows]
 
     @staticmethod
     def _infer_columns(rows, bbox):
-        xs = []
-        for row in rows:
-            for line in row:
-                xs.extend([line["bbox"][0], line["bbox"][2]])
-        xs = sorted(xs)
+        xs = sorted(v for row in rows for line in row for v in (line["bbox"][0], line["bbox"][2]))
         clusters = []
         for x in xs:
-            if not clusters or abs(x - clusters[-1][-1]) > 12:
-                clusters.append([x])
-            else:
-                clusters[-1].append(x)
-        edges = [sum(c) / len(c) for c in clusters if len(c) >= 1]
-        # Merge spurious close edges and cap table complexity.
+            if not clusters or abs(x - clusters[-1][-1]) > 12: clusters.append([x])
+            else: clusters[-1].append(x)
+        edges = [sum(c) / len(c) for c in clusters]
         out = []
         for x in edges:
-            if not out or x - out[-1] > 18:
-                out.append(x)
-        if len(out) < 2:
-            return []
+            if not out or x - out[-1] > 18: out.append(x)
+        if len(out) < 2: return []
         return [max(float(bbox[0]), out[0])] + out[1:-1] + [min(float(bbox[2]), out[-1])]
 
     @staticmethod
     def _edge_index(edges, cx):
         for i in range(len(edges) - 1):
-            if edges[i] <= cx <= edges[i + 1]:
-                return i
+            if edges[i] <= cx <= edges[i + 1]: return i
         return len(edges) - 2
 
     @staticmethod
     def _is_flow_safe(block):
-        # Avoid flow paragraphs for elements that look like independent labels,
-        # key/value pairs, or highly positioned fragments.
-        if len(block) > 12:
-            return False
-        if any(len(str(x.get("text", ""))) > 180 for x in block):
-            return False
-        return True
+        return len(block) <= 12 and not any(len(str(x.get("text", ""))) > 180 for x in block)
 
     @staticmethod
     def _font_size(block):
         heights = sorted(max(1.0, float(x["bbox"][3]) - float(x["bbox"][1])) for x in block)
-        if not heights:
-            return 10.0
+        if not heights: return 10.0
         h = heights[len(heights) // 2]
-        # OCR box height is not equal to font size. A 0.72-0.85 factor is a useful
-        # calibration range for rendered Latin/CJK text; clamp to avoid absurd sizes.
         return max(6.0, min(40.0, h * 0.78))
 
     @staticmethod
     def _alignment(block, page_width):
-        x0 = min(float(x["bbox"][0]) for x in block)
-        x1 = max(float(x["bbox"][2]) for x in block)
+        x0 = min(float(x["bbox"][0]) for x in block); x1 = max(float(x["bbox"][2]) for x in block)
         center = (x0 + x1) / 2
-        if abs(center - page_width / 2) < page_width * 0.08 and (x1 - x0) < page_width * 0.75:
-            return "center"
-        if x0 > page_width * 0.62:
-            return "right"
+        if abs(center - page_width / 2) < page_width * 0.08 and (x1 - x0) < page_width * 0.75: return "center"
+        if x0 > page_width * 0.62: return "right"
         return "left"
 
     @staticmethod
     def _font_name(text):
         return "Noto Sans CJK SC" if re.search(r"[\u3400-\u9fff]", text) else "Aptos"
 
-    def _font_name_from_pdf(self, fontname):
-        return self._font_name(fontname or "")
 
-    def _font_name(self, text):
-        return "Noto Sans CJK SC" if re.search(r"[\u3400-\u9fff]", text) else "Aptos"
-
-
-# Pipeline compatibility: pipeline.py imports this symbol.
 CoordinateDocxRenderer = V3Renderer
