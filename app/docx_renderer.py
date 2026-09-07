@@ -7,15 +7,18 @@ import fitz
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+from docx.oxml.ns import nsmap, qn
 from docx.shared import Pt
 
 EMU_PER_PT = 12700
 VML_NS = "urn:schemas-microsoft-com:vml"
+nsmap.setdefault("v", VML_NS)
 
 
 def vml(tag: str):
-    return OxmlElement(f"{{{VML_NS}}}{tag}")
+    # OxmlElement expects a namespace-prefixed tag (for example v:shape),
+    # not Clark notation ({namespace}shape).
+    return OxmlElement(f"v:{tag}")
 
 
 class CoordinateDocxRenderer:
