@@ -24,6 +24,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -U pip && \
+    pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
     pip install -r requirements.txt
 
 COPY app ./app
