@@ -11,6 +11,11 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 EMU_PER_PT = 12700
+VML_NS = "urn:schemas-microsoft-com:vml"
+
+
+def vml(tag: str):
+    return OxmlElement(f"{{{VML_NS}}}{tag}")
 
 
 class CoordinateDocxRenderer:
@@ -51,7 +56,6 @@ class CoordinateDocxRenderer:
                     pass
 
         for region in item.get("regions", []):
-            x0, y0, x1, y1 = region["bbox"]
             for line in region.get("lines", []):
                 text = str(line.get("text", "")).strip()
                 if not text:
@@ -65,20 +69,27 @@ class CoordinateDocxRenderer:
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing = 1
+
         pict = OxmlElement("w:pict")
-        shape = OxmlElement("v:shape")
-        shape.set(qn("id"), f"_x0000_s{abs(hash((x0,y0,x1,y1,text))) % 800000 + 100000}")
-        shape.set(qn("type"), "#_x0000_t202")
-        shape.set("style", f"position:absolute;margin-left:{x0}pt;margin-top:{y0}pt;width:{max(1,x1-x0)}pt;height:{max(1,y1-y0)}pt;mso-wrap-style:none")
-        shape.set(qn("stroked"), "f")
-        shape.set(qn("filled"), "f")
-        textbox = OxmlElement("v:textbox")
+        shape = vml("shape")
+        shape.set("id", f"_x0000_s{abs(hash((x0, y0, x1, y1, text))) % 800000 + 100000}")
+        shape.set("type", "#_x0000_t202")
+        shape.set(
+            "style",
+            f"position:absolute;margin-left:{x0}pt;margin-top:{y0}pt;"
+            f"width:{max(1, x1-x0)}pt;height:{max(1, y1-y0)}pt;"
+            "mso-wrap-style:none",
+        )
+        shape.set("stroked", "f")
+        shape.set("filled", "f")
+
+        textbox = vml("textbox")
         content = OxmlElement("w:txbxContent")
         wp = OxmlElement("w:p")
         wr = OxmlElement("w:r")
         rp = OxmlElement("w:rPr")
         sz = OxmlElement("w:sz")
-        sz.set(qn("w:val"), str(max(12, min(72, int(max(6, y1-y0) * 1.25)))) )
+        sz.set(qn("w:val"), str(max(12, min(72, int(max(6, y1-y0) * 1.25)))))
         rp.append(sz)
         wr.append(rp)
         wt = OxmlElement("w:t")
@@ -96,17 +107,35 @@ class CoordinateDocxRenderer:
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.space_after = Pt(0)
         run = p.add_run()
-        inline = run.add_picture(io.BytesIO(blob), width=Pt(max(1,w)), height=Pt(max(1,h)))
+        inline = run.add_picture(io.BytesIO(blob), width=Pt(max(1, w)), height=Pt(max(1, h)))
         old = inline._inline
         anchor = OxmlElement("wp:anchor")
-        for k,v in {"distT":"0","distB":"0","distL":"0","distR":"0","simplePos":"0","relativeHeight":"0","behindDoc":"0","locked":"0","layoutInCell":"1","allowOverlap":"1"}.items(): anchor.set(k,v)
-        simple = OxmlElement("wp:simplePos"); simple.set("x","0"); simple.set("y","0"); anchor.append(simple)
-        for tag, value in (("positionH",x),("positionV",y)):
-            pos = OxmlElement(f"wp:{tag}"); pos.set("relativeFrom","page")
-            off = OxmlElement("wp:posOffset"); off.text = str(int(value*EMU_PER_PT)); pos.append(off); anchor.append(pos)
-        extent = OxmlElement("wp:extent"); extent.set("cx",str(int(w*EMU_PER_PT))); extent.set("cy",str(int(h*EMU_PER_PT))); anchor.append(extent)
+        for k, v in {
+            "distT": "0", "distB": "0", "distL": "0", "distR": "0",
+            "simplePos": "0", "relativeHeight": "0", "behindDoc": "0",
+            "locked": "0", "layoutInCell": "1", "allowOverlap": "1",
+        }.items():
+            anchor.set(k, v)
+        simple = OxmlElement("wp:simplePos")
+        simple.set("x", "0")
+        simple.set("y", "0")
+        anchor.append(simple)
+        for tag, value in (("positionH", x), ("positionV", y)):
+            pos = OxmlElement(f"wp:{tag}")
+            pos.set("relativeFrom", "page")
+            off = OxmlElement("wp:posOffset")
+            off.text = str(int(value * EMU_PER_PT))
+            pos.append(off)
+            anchor.append(pos)
+        extent = OxmlElement("wp:extent")
+        extent.set("cx", str(int(w * EMU_PER_PT)))
+        extent.set("cy", str(int(h * EMU_PER_PT)))
+        anchor.append(extent)
         eff = OxmlElement("wp:effectExtent")
-        for k in ("l","t","r","b"): eff.set(k,"0")
-        anchor.append(eff); anchor.append(OxmlElement("wp:wrapNone"))
-        for child in list(old): anchor.append(child)
+        for k in ("l", "t", "r", "b"):
+            eff.set(k, "0")
+        anchor.append(eff)
+        anchor.append(OxmlElement("wp:wrapNone"))
+        for child in list(old):
+            anchor.append(child)
         old.getparent().replace(old, anchor)
