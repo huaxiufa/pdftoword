@@ -16,6 +16,7 @@ from .pipeline import pdf_to_docx
 app = FastAPI(title="PDF to Word")
 WEB = Path(__file__).resolve().parent.parent / "web" / "index.html"
 JOBS: dict[str, dict] = {}
+BUILD_VERSION = "2026-09-07-renderer-v2"
 
 
 def run_job(job_id: str, pdf: Path, docx: Path):
@@ -48,12 +49,12 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "engine": "EasyOCR + DocLayout-YOLO", "version": "2026-09-07-easyocr"}
+    return {"ok": True, "engine": "EasyOCR + DocLayout-YOLO", "renderer": "DrawingML", "version": BUILD_VERSION}
 
 
 @app.get("/version")
 def version():
-    return {"engine": "EasyOCR + DocLayout-YOLO", "version": "2026-09-07-easyocr"}
+    return {"engine": "EasyOCR + DocLayout-YOLO", "renderer": "DrawingML", "version": BUILD_VERSION}
 
 
 @app.post("/convert")
