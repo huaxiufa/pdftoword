@@ -4,11 +4,12 @@ import asyncio
 import os
 import shutil
 import tempfile
+import traceback
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .pipeline import pdf_to_docx
 
@@ -24,19 +25,35 @@ def run_job(job_id: str, pdf: Path, docx: Path):
         pdf_to_docx(pdf, docx, progress)
         JOBS[job_id]["status"] = "done"
     except Exception as exc:
-        JOBS[job_id].update(status="error", stage="error", message=str(exc), percent=100)
+        detail = traceback.format_exc()
+        print(detail, flush=True)
+        JOBS[job_id].update(
+            status="error",
+            stage="error",
+            message=f"{type(exc).__name__}: {exc}",
+            error_detail=detail,
+            percent=100,
+        )
     finally:
         pdf.unlink(missing_ok=True)
 
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return WEB.read_text(encoding="utf-8")
+    response = HTMLResponse(WEB.read_text(encoding="utf-8"))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "engine": "EasyOCR + DocLayout-YOLO", "version": "2026-09-07-easyocr"}
+
+
+@app.get("/version")
+def version():
+    return {"engine": "EasyOCR + DocLayout-YOLO", "version": "2026-09-07-easyocr"}
 
 
 @app.post("/convert")
