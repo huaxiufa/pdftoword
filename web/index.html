@@ -1,50 +1,39 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PDF → Word V5</title>
-  <style>
-    body{font-family:Arial,"Microsoft YaHei",sans-serif;background:#f5f7fb;margin:0;color:#172033}
-    .wrap{max-width:760px;margin:70px auto;padding:0 20px}.card{background:#fff;border-radius:18px;padding:36px;box-shadow:0 12px 40px rgba(20,30,60,.08)}
-    h1{margin:0 0 10px}.sub{color:#687386;line-height:1.7}.box{border:2px dashed #c9d1df;border-radius:14px;padding:28px;margin:28px 0;text-align:center}
-    input{max-width:100%}button{margin-top:18px;border:0;border-radius:10px;padding:12px 24px;background:#2563eb;color:white;font-size:16px;cursor:pointer}button:disabled{opacity:.5}
-    .bar{height:10px;background:#e9edf4;border-radius:99px;overflow:hidden;margin-top:22px}.fill{height:100%;width:0;background:#2563eb;transition:width .3s}
-    #status{margin-top:14px;color:#526075}.hint{font-size:13px;color:#8a94a6;margin-top:18px}
-  </style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Excel / CSV 清洗器</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#172033;background:#f4f7fb}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:920px;margin:42px auto;padding:0 18px}.card{background:#fff;border:1px solid #e5e9f0;border-radius:22px;padding:32px;box-shadow:0 18px 55px rgba(28,40,70,.08)}
+h1{margin:0 0 8px;font-size:30px}.sub{color:#657189;line-height:1.7}.drop{border:2px dashed #c8d2e2;border-radius:16px;padding:30px;text-align:center;margin:24px 0 18px}.drop.drag{background:#f0f6ff;border-color:#2563eb}.file-name{margin-top:10px;font-weight:600}.options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:18px 0}.opt{display:flex;gap:9px;align-items:center;padding:12px;border:1px solid #e4e8ef;border-radius:12px}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}button{border:0;border-radius:11px;padding:12px 20px;background:#2563eb;color:#fff;font-size:15px;font-weight:600;cursor:pointer}button.secondary{background:#eef2f7;color:#243047}button:disabled{opacity:.5;cursor:not-allowed}.bar{height:11px;background:#e9edf3;border-radius:99px;overflow:hidden;margin-top:22px}.fill{height:100%;width:0;background:#2563eb;transition:width .25s}.status{margin-top:12px;color:#53617a}.summary{display:none;margin-top:24px;grid-template-columns:repeat(4,1fr);gap:10px}.stat{background:#f7f9fc;border-radius:12px;padding:14px}.stat b{display:block;font-size:22px}.stat span{color:#718096;font-size:12px}.note{font-size:13px;color:#7a8699;margin-top:18px;line-height:1.6}.bad{color:#b42318}.good{color:#087443}@media(max-width:680px){.options{grid-template-columns:1fr}.summary{grid-template-columns:repeat(2,1fr)}.card{padding:22px}}
+</style>
 </head>
-<body>
-<div class="wrap"><div class="card">
-  <h1>PDF → Word V5 高保真版</h1>
-  <div class="sub">V5 不再重新解释 PDF 的字体、图片、透明蒙版、头像裁剪和复杂图形，而是直接使用 PyMuPDF 按 PDF 页面最终显示效果渲染，再原尺寸放入 Word 页面。目标是最大限度保持原 PDF 的视觉效果。</div>
-  <div class="box">
-    <input id="file" type="file" accept="application/pdf">
-    <br><button id="go">开始转换</button>
-    <div class="bar"><div id="fill" class="fill"></div></div>
-    <div id="status">等待上传 PDF</div>
-  </div>
-  <div class="hint">V5：PyMuPDF page rendering → exact-size DOCX page image · Build 2026-09-08-pdftoword-v5</div>
+<body><div class="wrap"><div class="card">
+<h1>Excel / CSV 清洗器</h1>
+<div class="sub">一键清理重复数据、空行、隐藏字符、异常空值，并自动规范邮箱和手机号。原文件不会被修改，结果另存为 XLSX。</div>
+<div id="drop" class="drop"><input id="file" type="file" accept=".csv,.xlsx,.xlsm"><div class="file-name" id="name">拖入文件，或点击选择</div></div>
+<div class="options">
+<label class="opt"><input id="blankRows" type="checkbox" checked> 删除整行空白</label>
+<label class="opt"><input id="dupes" type="checkbox" checked> 删除重复记录</label>
+<label class="opt"><input id="smart" type="checkbox" checked> 智能按邮箱/手机号去重</label>
+<label class="opt"><input id="report" type="checkbox" checked disabled> 生成清洗报告</label>
+</div>
+<div class="actions"><button id="go">开始清洗</button><button id="reset" class="secondary">重新选择</button></div>
+<div class="bar"><div id="fill" class="fill"></div></div><div id="status" class="status">等待文件</div>
+<div id="summary" class="summary"></div>
+<div class="note">建议先保留原始文件备份。CSV 会自动尝试 UTF-8、GB18030、Big5 等常见编码；XLSX 默认处理第一个工作表。结果包含 Cleaned、Issues、Summary 三个工作表。</div>
 </div></div>
 <script>
-const fileEl=document.getElementById('file'), go=document.getElementById('go'), statusEl=document.getElementById('status'), fill=document.getElementById('fill');
-function setProgress(p,msg){fill.style.width=(p||0)+'%';statusEl.textContent=msg||''}
-go.onclick=async()=>{
-  if(!fileEl.files[0]){statusEl.textContent='请先选择 PDF';return}
-  go.disabled=true; setProgress(2,'正在上传…');
-  const fd=new FormData(); fd.append('file',fileEl.files[0]);
-  try{
-    const r=await fetch('/convert',{method:'POST',body:fd}); const data=await r.json();
-    if(!r.ok) throw new Error(data.detail||'上传失败');
-    const task=data.task_id;
-    const timer=setInterval(async()=>{
-      try{
-        const p=await fetch('/progress/'+task,{cache:'no-store'}).then(x=>x.json()); setProgress(p.percent,p.message);
-        if(p.status==='done'){clearInterval(timer);setProgress(100,'转换完成，正在下载…');window.location='/result/'+task}
-        if(p.status==='error'){clearInterval(timer);throw new Error(p.message||'转换失败')}
-      }catch(e){clearInterval(timer);statusEl.textContent='失败：'+e.message;go.disabled=false}
-    },700)
-  }catch(e){statusEl.textContent='失败：'+e.message;go.disabled=false}
-}
+const fileEl=document.getElementById('file'),drop=document.getElementById('drop'),nameEl=document.getElementById('name'),go=document.getElementById('go'),reset=document.getElementById('reset'),fill=document.getElementById('fill'),statusEl=document.getElementById('status'),summaryEl=document.getElementById('summary');
+function setFile(f){if(!f)return;fileEl.files=new DataTransfer().files;nameEl.textContent=f.name;drop.dataset.ready='1';drop._file=f}
+fileEl.onchange=()=>{const f=fileEl.files[0];if(f){nameEl.textContent=f.name;drop._file=f;drop.dataset.ready='1'}};
+['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('drag')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('drag')}));
+drop.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0];if(f){drop._file=f;nameEl.textContent=f.name;drop.dataset.ready='1'}});
+function progress(p,msg){fill.style.width=(p||0)+'%';statusEl.textContent=msg||''}
+function showSummary(s){summaryEl.style.display='grid';summaryEl.innerHTML=[['原始行数',s.original_rows],['清洗后',s.cleaned_rows],['删除重复',s.removed_duplicates],['发现问题',s.issues]].map(x=>`<div class="stat"><b>${x[1]}</b><span>${x[0]}</span></div>`).join('')}
+reset.onclick=()=>{fileEl.value='';drop._file=null;drop.dataset.ready='';nameEl.textContent='拖入文件，或点击选择';summaryEl.style.display='none';progress(0,'等待文件');go.disabled=false}
+go.onclick=async()=>{const f=drop._file||fileEl.files[0];if(!f){statusEl.textContent='请先选择 CSV 或 Excel 文件';return}go.disabled=true;progress(3,'正在上传…');const fd=new FormData();fd.append('file',f);fd.append('options',JSON.stringify({remove_blank_rows:document.getElementById('blankRows').checked,remove_duplicates:document.getElementById('dupes').checked,smart_dedupe:document.getElementById('smart').checked}));try{const r=await fetch('/clean',{method:'POST',body:fd});const d=await r.json();if(!r.ok)throw new Error(d.detail||'上传失败');const task=d.task_id;const timer=setInterval(async()=>{try{const p=await fetch('/progress/'+task,{cache:'no-store'}).then(x=>x.json());progress(p.percent,p.message);if(p.status==='done'){clearInterval(timer);showSummary(p.summary||{});progress(100,'清洗完成，正在下载…');window.location='/result/'+task}if(p.status==='error'){clearInterval(timer);throw new Error(p.message||'清洗失败')}}catch(e){clearInterval(timer);statusEl.innerHTML='<span class="bad">失败：'+e.message+'</span>';go.disabled=false}},500)}catch(e){statusEl.innerHTML='<span class="bad">失败：'+e.message+'</span>';go.disabled=false}}
 </script>
-</body>
-</html>
+</body></html>
