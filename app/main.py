@@ -11,12 +11,12 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
-from .gemini_converter import convert_with_gemini
+from .v4_renderer import convert_pdf_to_docx
 
-app = FastAPI(title="PDF to Word - Gemini")
+app = FastAPI(title="PDF to Word - V4")
 WEB = Path(__file__).resolve().parent.parent / "web" / "index.html"
 JOBS: dict[str, dict] = {}
-BUILD_VERSION = "2026-09-07-gemini-v1"
+BUILD_VERSION = "2026-09-08-pdftoword-v4"
 
 
 def run_job(job_id: str, pdf: Path, docx: Path) -> None:
@@ -24,8 +24,8 @@ def run_job(job_id: str, pdf: Path, docx: Path) -> None:
         JOBS[job_id].update(data)
 
     try:
-        convert_with_gemini(pdf, docx, progress)
-        JOBS[job_id].update(status="done", stage="done", percent=100, message="转换完成")
+        convert_pdf_to_docx(pdf, docx, progress)
+        JOBS[job_id].update(status="done", stage="done", percent=100, message="V4 转换完成")
     except Exception as exc:
         detail = traceback.format_exc()
         print(detail, flush=True)
@@ -44,17 +44,18 @@ def run_job(job_id: str, pdf: Path, docx: Path) -> None:
 def index() -> HTMLResponse:
     response = HTMLResponse(WEB.read_text(encoding="utf-8"))
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     return response
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "engine": "Gemini", "renderer": "HTML + LibreOffice", "version": BUILD_VERSION}
+    return {"ok": True, "engine": "PyMuPDF", "renderer": "DOCX V4", "version": BUILD_VERSION}
 
 
 @app.get("/version")
 def version() -> dict:
-    return {"engine": "Gemini", "renderer": "HTML + LibreOffice", "version": BUILD_VERSION}
+    return {"engine": "PyMuPDF", "renderer": "DOCX V4", "version": BUILD_VERSION}
 
 
 @app.post("/convert")
@@ -85,7 +86,7 @@ async def convert(file: UploadFile = File(...)) -> dict:
         "status": "running",
         "stage": "queued",
         "percent": 0,
-        "message": "任务已创建",
+        "message": "V4 任务已创建",
     }
     asyncio.create_task(asyncio.to_thread(run_job, job_id, pdf, docx))
     return {"task_id": job_id}
@@ -108,6 +109,6 @@ def result(job_id: str) -> FileResponse:
         raise HTTPException(404, "结果文件不存在")
     return FileResponse(
         path,
-        filename="converted.docx",
+        filename="converted-v4.docx",
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
