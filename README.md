@@ -1,34 +1,38 @@
-# PDF → Word V4
+# PDF → Word V5
 
-V4 abandons the Gemini-generated HTML renderer and rebuilds the DOCX from the PDF's own objects.
+V5 is the final visual-fidelity renderer.
 
 ## Architecture
 
-**PDF → PyMuPDF → Text/Image objects → DOCX V4**
+**PDF → PyMuPDF page rendering → exact-size DOCX page image**
 
-PyMuPDF provides page geometry, text blocks / lines / spans, image bytes and image bounding boxes. The renderer maps those objects into Word sections, paragraphs and floating image anchors. This keeps the PDF as the source of truth for page size, object position and image placement.
+Instead of rebuilding the PDF's text, images and drawing objects independently, V5 asks MuPDF to render each complete PDF page exactly as a PDF viewer would see it, then places that rendered page at the exact PDF page dimensions inside a matching Word section.
 
-PyMuPDF documents that `Page.get_text("dict")` exposes text/image blocks and image bounding boxes, while `Page.get_image_rects()` provides accurate displayed image rectangles. Coordinates are based on the unrotated page coordinate system, so V4 keeps the PDF geometry explicit instead of asking an LLM to recreate it. citeturn0search0turn0search2turn0search6
+This is intentional: PDF and DOCX use different layout engines, so independently rebuilding every font metric, transparency mask, clipping path, avatar crop, vector shape and image transform can introduce visible differences. PyMuPDF's page renderer supports DPI, colorspace, transparency and other rendering controls, while `get_image_info()` is available when object-level inspection is needed.
 
-## What V4 handles
+## What V5 prioritizes
 
-- Exact PDF page width / height per Word section.
-- Text blocks, lines and spans with font name, size, color, bold and italic when available.
-- Original displayed images, including inline PDF images that do not appear in `Page.get_images()`.
-- Image bounding boxes and basic rotation handling.
-- Image clipping when an image extends outside the visible page.
-- Floating Word image anchors using page-relative coordinates.
-- No Gemini dependency and no LibreOffice dependency for conversion.
+- Visual fidelity over editable-text fidelity.
+- Transparent PDF images and soft masks are composited by MuPDF before insertion into Word.
+- Processed avatars, clipping, masks, rotation and image transforms are preserved as they appear in the PDF.
+- Fonts, glyph shapes, line spacing, kerning, vector graphics and other PDF drawing operations are preserved visually by page rendering.
+- Exact PDF page width / height is applied to each Word section.
+- No Gemini dependency.
+- No LibreOffice dependency for conversion.
 
-## Limitations
+## Important trade-off
 
-PDF and DOCX have different layout models. V4 is designed to preserve geometry and editable text, but Word's text metrics, font availability, wrapping and floating-object behavior can still differ from the PDF. Multi-column reading order and complex vector graphics require additional heuristics. PyMuPDF itself notes that PDF text extraction order depends on how the source PDF was created. citeturn0search7
+The page content is embedded as a high-resolution page image, so the resulting Word document is **visually faithful but not equivalent to a natively editable Word document**. This is the deliberate final trade-off for the case where preserving the original PDF appearance is more important than reflowable/editable text.
 
-Scanned PDFs without a text layer are not yet OCR-first in this V4 baseline. OCR can be added later using PyMuPDF's OCR text page support. citeturn0search4
+Default rendering is 220 DPI. You can change it with:
+
+```env
+PDF_RENDER_DPI=220
+```
+
+The renderer clamps this setting to 120–300 DPI.
 
 ## Run
-
-Copy `.env.example` to `.env` if needed and keep `MAX_UPLOAD_MB` at the desired limit.
 
 ```bash
 docker compose up -d --build
