@@ -16,6 +16,10 @@ def _safe_name(name: str) -> str:
     return stem[:100]
 
 
+def _has_alpha(image: Image.Image) -> bool:
+    return "A" in image.getbands() or "transparency" in image.info
+
+
 def _resize(image: Image.Image, max_width: int | None, max_height: int | None) -> Image.Image:
     if not max_width and not max_height:
         return image
@@ -39,7 +43,7 @@ def _encode(image: Image.Image, fmt: str, quality: int, strip_metadata: bool) ->
         save_kwargs.update(format="JPEG", quality=quality, progressive=True)
         ext = ".jpg"
     elif fmt == "WEBP":
-        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        image = image.convert("RGBA" if _has_alpha(image) else "RGB")
         save_kwargs.update(format="WEBP", quality=quality, method=6)
         ext = ".webp"
     else:
@@ -61,7 +65,7 @@ def _compress_one(source: Path, options: dict) -> tuple[bytes, str, dict]:
         image.load()
         fmt = str(options.get("format", "auto")).lower()
         if fmt == "auto":
-            fmt = "png" if image.mode in {"RGBA", "LA", "P"} and ".png" in source.suffix.lower() else "webp"
+            fmt = "png" if _has_alpha(image) and source.suffix.lower() == ".png" else "webp"
         if fmt == "jpg":
             output_fmt = "JPEG"
         elif fmt == "png":
