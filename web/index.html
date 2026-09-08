@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PDF → Word V4</title>
+  <title>PDF → Word V5</title>
   <style>
     body{font-family:Arial,"Microsoft YaHei",sans-serif;background:#f5f7fb;margin:0;color:#172033}
     .wrap{max-width:760px;margin:70px auto;padding:0 20px}.card{background:#fff;border-radius:18px;padding:36px;box-shadow:0 12px 40px rgba(20,30,60,.08)}
@@ -15,15 +15,15 @@
 </head>
 <body>
 <div class="wrap"><div class="card">
-  <h1>PDF → 可编辑 Word V4</h1>
-  <div class="sub">基于 PyMuPDF 直接解析 PDF 对象，再重建 DOCX。图片、文字坐标和页面尺寸由 PDF 本身决定，不再让 Gemini 重新生成排版。</div>
+  <h1>PDF → Word V5 高保真版</h1>
+  <div class="sub">V5 不再重新解释 PDF 的字体、图片、透明蒙版、头像裁剪和复杂图形，而是直接使用 PyMuPDF 按 PDF 页面最终显示效果渲染，再原尺寸放入 Word 页面。目标是最大限度保持原 PDF 的视觉效果。</div>
   <div class="box">
     <input id="file" type="file" accept="application/pdf">
     <br><button id="go">开始转换</button>
     <div class="bar"><div id="fill" class="fill"></div></div>
     <div id="status">等待上传 PDF</div>
   </div>
-  <div class="hint">V4：PyMuPDF → PDF Text/Image Objects → DOCX · Build 2026-09-08-pdftoword-v4</div>
+  <div class="hint">V5：PyMuPDF page rendering → exact-size DOCX page image · Build 2026-09-08-pdftoword-v5</div>
 </div></div>
 <script>
 const fileEl=document.getElementById('file'), go=document.getElementById('go'), statusEl=document.getElementById('status'), fill=document.getElementById('fill');
