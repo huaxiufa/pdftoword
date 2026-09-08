@@ -2,11 +2,9 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    MAX_UPLOAD_MB=50 \
-    GEMINI_MODEL=gemini-3.7-flash
+    MAX_UPLOAD_MB=50
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-writer \
     fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
