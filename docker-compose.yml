@@ -7,5 +7,4 @@ services:
       - .env
     environment:
       MAX_UPLOAD_MB: "50"
-      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-3.7-flash}"
     restart: unless-stopped
