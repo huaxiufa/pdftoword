@@ -1,36 +1,48 @@
-# PDF → Word · Gemini
+# PDF → Word V4
 
-这是一次全新重写：不再使用原来的 OCR / DocLayout-YOLO / DrawingML 渲染链路。
+V4 abandons the Gemini-generated HTML renderer and rebuilds the DOCX from the PDF's own objects.
 
-新流程：
+## Architecture
 
-**PDF → Gemini → HTML → LibreOffice → DOCX**
+**PDF → PyMuPDF → Text/Image objects → DOCX V4**
 
-同时使用 PyMuPDF 提取 PDF 中实际显示的原始图片，再按 Gemini 返回的 `[[PDF_IMAGE_n]]` 占位符回填，因此图片不会依赖 Gemini 重新生成。
+PyMuPDF provides page geometry, text blocks / lines / spans, image bytes and image bounding boxes. The renderer maps those objects into Word sections, paragraphs and floating image anchors. This keeps the PDF as the source of truth for page size, object position and image placement.
 
-## 启动
+PyMuPDF documents that `Page.get_text("dict")` exposes text/image blocks and image bounding boxes, while `Page.get_image_rects()` provides accurate displayed image rectangles. Coordinates are based on the unrotated page coordinate system, so V4 keeps the PDF geometry explicit instead of asking an LLM to recreate it. citeturn0search0turn0search2turn0search6
 
-复制 `.env.example` 为 `.env`，填入：
+## What V4 handles
 
-```env
-GEMINI_API_KEY=你的_key
-GEMINI_MODEL=gemini-3.7-flash
-```
+- Exact PDF page width / height per Word section.
+- Text blocks, lines and spans with font name, size, color, bold and italic when available.
+- Original displayed images, including inline PDF images that do not appear in `Page.get_images()`.
+- Image bounding boxes and basic rotation handling.
+- Image clipping when an image extends outside the visible page.
+- Floating Word image anchors using page-relative coordinates.
+- No Gemini dependency and no LibreOffice dependency for conversion.
 
-然后：
+## Limitations
+
+PDF and DOCX have different layout models. V4 is designed to preserve geometry and editable text, but Word's text metrics, font availability, wrapping and floating-object behavior can still differ from the PDF. Multi-column reading order and complex vector graphics require additional heuristics. PyMuPDF itself notes that PDF text extraction order depends on how the source PDF was created. citeturn0search7
+
+Scanned PDFs without a text layer are not yet OCR-first in this V4 baseline. OCR can be added later using PyMuPDF's OCR text page support. citeturn0search4
+
+## Run
+
+Copy `.env.example` to `.env` if needed and keep `MAX_UPLOAD_MB` at the desired limit.
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
-打开：`http://localhost:8000`
+Open:
 
-## 说明
+```text
+http://localhost:8000
+```
 
-- 默认上传限制 50 MB。
-- Gemini 负责理解文字、表格、页面结构和图片位置。
-- 原始 PDF 图片由 PyMuPDF 提取，不让模型重绘图片。
-- LibreOffice 在容器内负责最终 HTML → DOCX。
-- 如果 Gemini 返回异常，当前版本会直接报错，不会偷偷切回旧 OCR 引擎。
+## Update an existing installation
 
-Gemini 官方 API 支持直接上传 PDF 并让模型进行文档理解；本项目使用 Python `google-genai` SDK 的 Files API。
+```bash
+git pull origin main
+docker compose up -d --build
+```
