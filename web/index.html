@@ -2,38 +2,49 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Excel / CSV 清洗器</title>
+<title>Image Compressor — 图片压缩器</title>
 <style>
 :root{font-family:Inter,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#172033;background:#f4f7fb}
-*{box-sizing:border-box}body{margin:0}.wrap{max-width:920px;margin:42px auto;padding:0 18px}.card{background:#fff;border:1px solid #e5e9f0;border-radius:22px;padding:32px;box-shadow:0 18px 55px rgba(28,40,70,.08)}
-h1{margin:0 0 8px;font-size:30px}.sub{color:#657189;line-height:1.7}.drop{border:2px dashed #c8d2e2;border-radius:16px;padding:30px;text-align:center;margin:24px 0 18px}.drop.drag{background:#f0f6ff;border-color:#2563eb}.file-name{margin-top:10px;font-weight:600}.options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:18px 0}.opt{display:flex;gap:9px;align-items:center;padding:12px;border:1px solid #e4e8ef;border-radius:12px}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}button{border:0;border-radius:11px;padding:12px 20px;background:#2563eb;color:#fff;font-size:15px;font-weight:600;cursor:pointer}button.secondary{background:#eef2f7;color:#243047}button:disabled{opacity:.5;cursor:not-allowed}.bar{height:11px;background:#e9edf3;border-radius:99px;overflow:hidden;margin-top:22px}.fill{height:100%;width:0;background:#2563eb;transition:width .25s}.status{margin-top:12px;color:#53617a}.summary{display:none;margin-top:24px;grid-template-columns:repeat(4,1fr);gap:10px}.stat{background:#f7f9fc;border-radius:12px;padding:14px}.stat b{display:block;font-size:22px}.stat span{color:#718096;font-size:12px}.note{font-size:13px;color:#7a8699;margin-top:18px;line-height:1.6}.bad{color:#b42318}.good{color:#087443}@media(max-width:680px){.options{grid-template-columns:1fr}.summary{grid-template-columns:repeat(2,1fr)}.card{padding:22px}}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:980px;margin:42px auto;padding:0 18px}.card{background:#fff;border:1px solid #e5e9f0;border-radius:24px;padding:32px;box-shadow:0 18px 55px rgba(28,40,70,.08)}
+h1{margin:0 0 8px;font-size:32px}.sub{color:#657189;line-height:1.7}.drop{border:2px dashed #c8d2e2;border-radius:18px;padding:34px;text-align:center;margin:24px 0 18px;cursor:pointer}.drop.drag{background:#f0f6ff;border-color:#2563eb}.drop strong{font-size:18px}.hint{color:#7a8699;font-size:13px;margin-top:7px}.file-list{margin-top:15px;display:grid;gap:7px;text-align:left}.file{background:#f7f9fc;border-radius:10px;padding:9px 12px;display:flex;justify-content:space-between;font-size:13px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:20px 0}.field{border:1px solid #e4e8ef;border-radius:14px;padding:14px}.field label{display:block;font-size:13px;color:#68758a;margin-bottom:8px}.field input,.field select{width:100%;border:1px solid #d8deea;border-radius:9px;padding:10px;font:inherit;background:#fff}.range{display:flex;gap:10px;align-items:center}.range input{flex:1}.range b{min-width:48px;text-align:right}.check{display:flex;align-items:center;gap:9px}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}button{border:0;border-radius:11px;padding:12px 20px;background:#2563eb;color:#fff;font-size:15px;font-weight:600;cursor:pointer}button.secondary{background:#eef2f7;color:#243047}button:disabled{opacity:.5;cursor:not-allowed}.bar{height:11px;background:#e9edf3;border-radius:99px;overflow:hidden;margin-top:22px}.fill{height:100%;width:0;background:#2563eb;transition:width .25s}.status{margin-top:12px;color:#53617a}.summary{display:none;margin-top:22px;grid-template-columns:repeat(3,1fr);gap:10px}.stat{background:#f7f9fc;border-radius:12px;padding:15px}.stat b{display:block;font-size:22px}.stat span{color:#718096;font-size:12px}.good{color:#087443}.bad{color:#b42318}.note{font-size:13px;color:#7a8699;margin-top:18px;line-height:1.7}.privacy{margin-top:12px;padding:12px 14px;background:#f4f8ff;border-radius:11px;font-size:13px;color:#51627d}@media(max-width:680px){.grid,.summary{grid-template-columns:1fr}.card{padding:22px}}
 </style>
 </head>
 <body><div class="wrap"><div class="card">
-<h1>Excel / CSV 清洗器</h1>
-<div class="sub">一键清理重复数据、空行、隐藏字符、异常空值，并自动规范邮箱和手机号。原文件不会被修改，结果另存为 XLSX。</div>
-<div id="drop" class="drop"><input id="file" type="file" accept=".csv,.xlsx,.xlsm"><div class="file-name" id="name">拖入文件，或点击选择</div></div>
-<div class="options">
-<label class="opt"><input id="blankRows" type="checkbox" checked> 删除整行空白</label>
-<label class="opt"><input id="dupes" type="checkbox" checked> 删除重复记录</label>
-<label class="opt"><input id="smart" type="checkbox" checked> 智能按邮箱/手机号去重</label>
-<label class="opt"><input id="report" type="checkbox" checked disabled> 生成清洗报告</label>
+<h1>Image Compressor</h1>
+<div class="sub">批量压缩 JPG、PNG、WebP，支持调整质量、缩放尺寸、转换格式和目标文件大小。处理完成后一次下载 ZIP。</div>
+<div id="drop" class="drop">
+<input id="file" type="file" accept=".jpg,.jpeg,.png,.webp" multiple hidden>
+<strong>拖入图片，或点击选择</strong><div class="hint">支持 JPG / PNG / WebP · 可一次选择多张图片</div>
+<div id="files" class="file-list"></div>
 </div>
-<div class="actions"><button id="go">开始清洗</button><button id="reset" class="secondary">重新选择</button></div>
-<div class="bar"><div id="fill" class="fill"></div></div><div id="status" class="status">等待文件</div>
+<div class="grid">
+<div class="field"><label>输出格式</label><select id="format"><option value="auto">自动选择（推荐）</option><option value="webp">WebP</option><option value="jpg">JPG</option><option value="png">PNG</option></select></div>
+<div class="field"><label>图片质量</label><div class="range"><input id="quality" type="range" min="40" max="95" value="82"><b id="qv">82</b></div></div>
+<div class="field"><label>最大宽度（留空不缩放）</label><input id="maxWidth" type="number" min="100" max="10000" placeholder="例如 1920"></div>
+<div class="field"><label>最大高度（留空不缩放）</label><input id="maxHeight" type="number" min="100" max="10000" placeholder="例如 1920"></div>
+<div class="field"><label>目标大小（KB，可选）</label><input id="targetKb" type="number" min="20" max="20000" placeholder="例如 500"></div>
+<div class="field"><label>隐私</label><label class="check"><input id="strip" type="checkbox" checked> 删除 EXIF 等图片元数据</label></div>
+</div>
+<div class="actions"><button id="go">开始压缩</button><button id="reset" class="secondary">重新选择</button></div>
+<div class="bar"><div id="fill" class="fill"></div></div><div id="status" class="status">等待图片</div>
 <div id="summary" class="summary"></div>
-<div class="note">建议先保留原始文件备份。CSV 会自动尝试 UTF-8、GB18030、Big5 等常见编码；XLSX 默认处理第一个工作表。结果包含 Cleaned、Issues、Summary 三个工作表。</div>
+<div class="privacy">🔒 原图只用于本次压缩任务，不会修改你的本地文件。建议处理身份证、合同等敏感图片时保留“删除 EXIF”选项。</div>
+<div class="note">小技巧：照片通常选 WebP + 75–85 质量；如果需要兼容老系统可选 JPG。PNG 适合透明背景和截图。设置目标 KB 后，JPG/WebP 会自动降低质量直到尽量接近目标大小。</div>
 </div></div>
 <script>
-const fileEl=document.getElementById('file'),drop=document.getElementById('drop'),nameEl=document.getElementById('name'),go=document.getElementById('go'),reset=document.getElementById('reset'),fill=document.getElementById('fill'),statusEl=document.getElementById('status'),summaryEl=document.getElementById('summary');
-function setFile(f){if(!f)return;fileEl.files=new DataTransfer().files;nameEl.textContent=f.name;drop.dataset.ready='1';drop._file=f}
-fileEl.onchange=()=>{const f=fileEl.files[0];if(f){nameEl.textContent=f.name;drop._file=f;drop.dataset.ready='1'}};
+const fileEl=document.getElementById('file'),drop=document.getElementById('drop'),filesEl=document.getElementById('files'),go=document.getElementById('go'),reset=document.getElementById('reset'),fill=document.getElementById('fill'),statusEl=document.getElementById('status'),summaryEl=document.getElementById('summary'),quality=document.getElementById('quality'),qv=document.getElementById('qv');
+let selected=[];
+quality.oninput=()=>qv.textContent=quality.value;
+drop.onclick=()=>fileEl.click();
+fileEl.onchange=()=>{selected=[...fileEl.files];renderFiles()};
 ['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('drag')}));
 ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('drag')}));
-drop.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0];if(f){drop._file=f;nameEl.textContent=f.name;drop.dataset.ready='1'}});
+drop.addEventListener('drop',ev=>{selected=[...ev.dataTransfer.files].filter(f=>/\.(jpe?g|png|webp)$/i.test(f.name));renderFiles()});
+function renderFiles(){filesEl.innerHTML=selected.map(f=>`<div class="file"><span>${f.name}</span><span>${(f.size/1024).toFixed(0)} KB</span></div>`).join('');statusEl.textContent=selected.length?`已选择 ${selected.length} 张图片`:'等待图片'}
 function progress(p,msg){fill.style.width=(p||0)+'%';statusEl.textContent=msg||''}
-function showSummary(s){summaryEl.style.display='grid';summaryEl.innerHTML=[['原始行数',s.original_rows],['清洗后',s.cleaned_rows],['删除重复',s.removed_duplicates],['发现问题',s.issues]].map(x=>`<div class="stat"><b>${x[1]}</b><span>${x[0]}</span></div>`).join('')}
-reset.onclick=()=>{fileEl.value='';drop._file=null;drop.dataset.ready='';nameEl.textContent='拖入文件，或点击选择';summaryEl.style.display='none';progress(0,'等待文件');go.disabled=false}
-go.onclick=async()=>{const f=drop._file||fileEl.files[0];if(!f){statusEl.textContent='请先选择 CSV 或 Excel 文件';return}go.disabled=true;progress(3,'正在上传…');const fd=new FormData();fd.append('file',f);fd.append('options',JSON.stringify({remove_blank_rows:document.getElementById('blankRows').checked,remove_duplicates:document.getElementById('dupes').checked,smart_dedupe:document.getElementById('smart').checked}));try{const r=await fetch('/clean',{method:'POST',body:fd});const d=await r.json();if(!r.ok)throw new Error(d.detail||'上传失败');const task=d.task_id;const timer=setInterval(async()=>{try{const p=await fetch('/progress/'+task,{cache:'no-store'}).then(x=>x.json());progress(p.percent,p.message);if(p.status==='done'){clearInterval(timer);showSummary(p.summary||{});progress(100,'清洗完成，正在下载…');window.location='/result/'+task}if(p.status==='error'){clearInterval(timer);throw new Error(p.message||'清洗失败')}}catch(e){clearInterval(timer);statusEl.innerHTML='<span class="bad">失败：'+e.message+'</span>';go.disabled=false}},500)}catch(e){statusEl.innerHTML='<span class="bad">失败：'+e.message+'</span>';go.disabled=false}}
+function showSummary(s){summaryEl.style.display='grid';summaryEl.innerHTML=[['图片数量',s.count],['原始大小',fmt(s.original_bytes)],['压缩后',fmt(s.output_bytes)],['平均节省',s.saved_percent+'%']].map(x=>`<div class="stat"><b>${x[1]}</b><span>${x[0]}</span></div>`).join('')}
+function fmt(n){if(!n)return '0 B';if(n<1024)return n+' B';if(n<1024*1024)return (n/1024).toFixed(0)+' KB';return (n/1024/1024).toFixed(2)+' MB'}
+reset.onclick=()=>{selected=[];fileEl.value='';renderFiles();summaryEl.style.display='none';progress(0,'等待图片');go.disabled=false}
+go.onclick=async()=>{if(!selected.length){statusEl.textContent='请先选择图片';return}go.disabled=true;progress(3,'正在上传…');const fd=new FormData();selected.forEach(f=>fd.append('files',f));fd.append('options',JSON.stringify({format:document.getElementById('format').value,quality:Number(quality.value),max_width:Number(document.getElementById('maxWidth').value)||null,max_height:Number(document.getElementById('maxHeight').value)||null,target_kb:Number(document.getElementById('targetKb').value)||null,strip_metadata:document.getElementById('strip').checked}));try{const r=await fetch('/compress',{method:'POST',body:fd});const d=await r.json();if(!r.ok)throw new Error(d.detail||'上传失败');const task=d.task_id;const timer=setInterval(async()=>{try{const p=await fetch('/progress/'+task,{cache:'no-store'}).then(x=>x.json());progress(p.percent,p.message);if(p.status==='done'){clearInterval(timer);showSummary(p.summary||{});progress(100,'压缩完成，正在下载…');window.location='/result/'+task}if(p.status==='error'){clearInterval(timer);throw new Error(p.message||'压缩失败')}}catch(e){clearInterval(timer);statusEl.innerHTML='<span class="bad">失败：'+e.message+'</span>';go.disabled=false}},500)}catch(e){statusEl.innerHTML='<span class="bad">失败：'+e.message+'</span>';go.disabled=false}}
 </script>
 </body></html>
